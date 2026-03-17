@@ -17,6 +17,7 @@ function formatRole(role: RoleType) {
 export default async function AdminPage() {
   const user = await requireAdminUser();
   const isSuperadmin = hasRole(user, [RoleType.SUPERADMIN]);
+  const isRegionAdmin = hasRole(user, [RoleType.REGION_ADMIN]);
 
   return (
     <div className="space-y-6">
@@ -29,6 +30,30 @@ export default async function AdminPage() {
           раздел управления пользователями, а региональные админы могут заходить
           в админскую часть и дальше получать свои рабочие разделы.
         </p>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+        <h2 className="text-2xl font-semibold text-slate-950">Доступные действия</h2>
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+            <p className="font-medium text-slate-950">Операторы</p>
+            <p className="mt-2 text-slate-600">
+              {isRegionAdmin
+                ? "Вы можете создавать операторов в своих регионах и указывать наименование организации."
+                : "Вы можете создавать операторов для любых регионов и контролировать их оргструктуру."}
+            </p>
+          </article>
+
+          {isSuperadmin ? (
+            <article className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+              <p className="font-medium text-slate-950">Пользователи</p>
+              <p className="mt-2 text-slate-600">
+                Управление суперадминами и региональными администраторами
+                доступно только с полной ролью.
+              </p>
+            </article>
+          ) : null}
+        </div>
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">

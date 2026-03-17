@@ -37,11 +37,34 @@ export async function requireAuthenticatedUser() {
   return user;
 }
 
+export type AdminUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
+
 export function hasRole(
-  user: NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>,
+  user: AdminUser,
   roles: RoleType[],
 ) {
   return user.memberships.some((membership) => roles.includes(membership.role));
+}
+
+export function getAdminScope(user: AdminUser) {
+  const isSuperadmin = hasRole(user, [RoleType.SUPERADMIN]);
+  const regionAdminMemberships = user.memberships.filter(
+    (membership) => membership.role === RoleType.REGION_ADMIN,
+  );
+
+  return {
+    isSuperadmin,
+    regionAdminMemberships,
+    manageableRegionIds: isSuperadmin
+      ? null
+      : [
+          ...new Set(
+            regionAdminMemberships
+              .map((membership) => membership.organization.regionId)
+              .filter((regionId): regionId is string => Boolean(regionId)),
+          ),
+        ],
+  };
 }
 
 export async function requireAdminUser() {

@@ -11,6 +11,7 @@ export default async function AdminLayout({
 }>) {
   const user = await requireAdminUser();
   const isSuperadmin = hasRole(user, [RoleType.SUPERADMIN]);
+  const isRegionAdmin = hasRole(user, [RoleType.REGION_ADMIN]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -42,6 +43,14 @@ export default async function AdminLayout({
             >
               Обзор
             </Link>
+            {isSuperadmin || isRegionAdmin ? (
+              <Link
+                href="/admin/operators"
+                className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
+              >
+                Операторы
+              </Link>
+            ) : null}
             {isSuperadmin ? (
               <Link
                 href="/admin/users"
