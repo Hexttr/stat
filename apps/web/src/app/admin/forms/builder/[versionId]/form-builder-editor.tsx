@@ -117,7 +117,7 @@ type Props = {
   error: string | null;
   publishedMeta: {
     fullName: string;
-    publishedAt: string;
+    publishedAtLabel: string;
   } | null;
   saveAction: (formData: FormData) => void | Promise<void>;
   publishAction: (formData: FormData) => void | Promise<void>;
@@ -359,7 +359,7 @@ export function FormBuilderEditor({
 
         {publishedMeta ? (
           <p className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            Опубликовано: {new Date(publishedMeta.publishedAt).toLocaleString("ru-RU")} пользователем {publishedMeta.fullName}.
+            Опубликовано: {publishedMeta.publishedAtLabel} пользователем {publishedMeta.fullName}.
           </p>
         ) : (
           <p className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -386,7 +386,12 @@ export function FormBuilderEditor({
           </div>
 
           <div className="mt-5">
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleRowDragEnd}>
+            <DndContext
+              id="form-builder-rows"
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleRowDragEnd}
+            >
               <SortableContext items={table.rows.map((row) => row.id)} strategy={verticalListSortingStrategy}>
                 <div className="space-y-3">
                   {table.rows.map((row) => (
@@ -422,7 +427,12 @@ export function FormBuilderEditor({
           </div>
 
           <div className="mt-5">
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+            <DndContext
+              id="form-builder-columns"
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleColumnDragEnd}
+            >
               <SortableContext items={table.columns.map((column) => column.id)} strategy={horizontalListSortingStrategy}>
                 <div className="flex gap-3 overflow-x-auto pb-2">
                   {table.columns.map((column) => (

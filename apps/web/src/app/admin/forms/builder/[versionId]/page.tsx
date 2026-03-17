@@ -66,7 +66,7 @@ export default async function FormBuilderPage({
         version.publishedAt
           ? {
               fullName: version.publishedBy?.fullName ?? "Неизвестно",
-              publishedAt: version.publishedAt.toISOString(),
+              publishedAtLabel: version.publishedAt.toLocaleString("ru-RU"),
             }
           : null
       }
