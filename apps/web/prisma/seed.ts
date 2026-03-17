@@ -3,11 +3,13 @@ import "dotenv/config";
 import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import {
-  FormAssignmentStatus,
+  FormTemplateVersionStatus,
   OrganizationType,
   PrismaClient,
   RoleType,
 } from "../src/generated/prisma/client";
+import { projectSchemaToFields } from "../src/lib/form-builder/projection";
+import { FormBuilderSchema } from "../src/lib/form-builder/schema";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -235,14 +237,54 @@ async function seedFormTemplates() {
     const fields = seededTemplateFields[formType.code] ?? [];
 
     for (const reportingYear of years) {
-      const schemaJson = {
-        code: formType.code,
-        reportingYear: reportingYear.year,
-        sections: [
+      const schemaJson: FormBuilderSchema = {
+        meta: {
+          formCode: formType.code,
+          title: `${formType.name} за ${reportingYear.year}`,
+          reportingYear: reportingYear.year,
+          description: `Базовый табличный шаблон для ${formType.name}.`,
+        },
+        headerFields: [
           {
-            key: "main",
+            id: "header_region_name",
+            key: "region_name",
+            label: "Регион",
+            fieldType: "text",
+            required: true,
+            placeholder: "Наименование региона",
+          },
+        ],
+        tables: [
+          {
+            id: "table_main",
             title: "Основные показатели",
-            fields,
+            description: "Главная статистическая таблица формы.",
+            columns: [
+              {
+                id: "column_value",
+                key: "value",
+                label: "Значение",
+                fieldType: "number",
+                unit: null,
+                required: false,
+                width: 220,
+                sticky: false,
+                placeholder: "Введите значение",
+                helpText: null,
+                options: [],
+              },
+            ],
+            rows: fields.map((field, index) => ({
+              id: `row_${index + 1}`,
+              key: field.key,
+              label: field.label,
+              description: field.unit ? `Единица измерения: ${field.unit}` : null,
+            })),
+            settings: {
+              stickyHeader: true,
+              stickyFirstColumn: true,
+              horizontalScroll: true,
+            },
           },
         ],
       };
@@ -257,10 +299,10 @@ async function seedFormTemplates() {
         },
         update: {
           title: `${formType.name} за ${reportingYear.year}`,
-          status:
+          versionStatus:
             reportingYear.year <= 2025
-              ? FormAssignmentStatus.PUBLISHED
-              : FormAssignmentStatus.DRAFT,
+              ? FormTemplateVersionStatus.PUBLISHED
+              : FormTemplateVersionStatus.DRAFT,
           schemaJson,
         },
         create: {
@@ -268,42 +310,47 @@ async function seedFormTemplates() {
           reportingYearId: reportingYear.id,
           version: 1,
           title: `${formType.name} за ${reportingYear.year}`,
-          status:
+          versionStatus:
             reportingYear.year <= 2025
-              ? FormAssignmentStatus.PUBLISHED
-              : FormAssignmentStatus.DRAFT,
+              ? FormTemplateVersionStatus.PUBLISHED
+              : FormTemplateVersionStatus.DRAFT,
           schemaJson,
         },
       });
 
-      for (const [index, field] of fields.entries()) {
-        await prisma.formField.upsert({
-          where: {
-            templateVersionId_key: {
-              templateVersionId: version.id,
-              key: field.key,
-            },
-          },
-          update: {
-            label: field.label,
-            fieldType: field.fieldType,
-            unit: field.unit ?? null,
-            isRequired: field.isRequired ?? false,
-            sortOrder: index,
-            section: "Основные показатели",
-          },
-          create: {
+      await prisma.formField.deleteMany({
+        where: {
+          templateVersionId: version.id,
+        },
+      });
+
+      const projectedFields = projectSchemaToFields(schemaJson).map((field, index) => {
+        const sourceField = fields.find((item) => item.key === field.rowKey);
+
+        return prisma.formField.create({
+          data: {
             templateVersionId: version.id,
             key: field.key,
             label: field.label,
-            fieldType: field.fieldType,
-            unit: field.unit ?? null,
-            isRequired: field.isRequired ?? false,
+            section: field.section,
+            tableId: field.tableId,
+            rowId: field.rowId,
+            rowKey: field.rowKey,
+            columnId: field.columnId,
+            columnKey: field.columnKey,
+            fieldPath: field.fieldPath,
+            fieldType: sourceField?.fieldType ?? field.fieldType,
+            unit: sourceField?.unit ?? field.unit,
+            placeholder: field.placeholder,
+            helpText: field.helpText,
             sortOrder: index,
-            section: "Основные показатели",
+            isRequired: sourceField?.isRequired ?? field.isRequired,
+            validationJson: field.validationJson ?? undefined,
           },
         });
-      }
+      });
+
+      await prisma.$transaction(projectedFields);
     }
   }
 }

@@ -31,6 +31,12 @@ enum FormAssignmentStatus {
   ARCHIVED
 }
 
+enum FormTemplateVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 enum SubmissionStatus {
   DRAFT
   SUBMITTED
@@ -67,6 +73,7 @@ model User {
   memberships   UserMembership[]
   submissions   Submission[]     @relation("SubmissionSubmittedBy")
   reviews       Submission[]     @relation("SubmissionReviewedBy")
+  publishedFormVersions FormTemplateVersion[] @relation("FormVersionPublishedBy")
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 }
@@ -149,6 +156,8 @@ model FormTemplate {
   versions        FormTemplateVersion[]
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
+
+  @@unique([formTypeId, name])
 }
 
 model FormTemplateVersion {
@@ -157,10 +166,13 @@ model FormTemplateVersion {
   reportingYearId   String
   version           Int
   title             String
-  status            FormAssignmentStatus @default(DRAFT)
+  versionStatus     FormTemplateVersionStatus @default(DRAFT)
   schemaJson        Json
+  publishedAt       DateTime?
+  publishedById     String?
   template          FormTemplate      @relation(fields: [templateId], references: [id], onDelete: Cascade)
   reportingYear     ReportingYear     @relation(fields: [reportingYearId], references: [id], onDelete: Restrict)
+  publishedBy       User?             @relation("FormVersionPublishedBy", fields: [publishedById], references: [id], onDelete: SetNull)
   fields            FormField[]
   assignments       FormAssignment[]
   createdAt         DateTime          @default(now())
@@ -175,8 +187,16 @@ model FormField {
   key                   String
   label                 String
   section               String?
+  tableId               String?
+  rowId                 String?
+  rowKey                String?
+  columnId              String?
+  columnKey             String?
+  fieldPath             String?
   fieldType             String
   unit                  String?
+  placeholder           String?
+  helpText              String?
   sortOrder             Int                  @default(0)
   isRequired            Boolean              @default(false)
   validationJson        Json?

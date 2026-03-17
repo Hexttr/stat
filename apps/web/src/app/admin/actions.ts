@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import {
   FormAssignmentStatus,
+  FormTemplateVersionStatus,
   OrganizationType,
   RoleType,
 } from "@/generated/prisma/client";
@@ -15,6 +16,13 @@ import {
   requireAdminUser,
   requireSuperadmin,
 } from "@/lib/access";
+import {
+  createDefaultFormSchema,
+  duplicateFormSchema,
+  formBuilderSchema,
+  normalizeFormSchema,
+} from "@/lib/form-builder/schema";
+import { projectSchemaToFields } from "@/lib/form-builder/projection";
 import { prisma } from "@/lib/prisma";
 
 const createUserSchema = z.object({
@@ -53,6 +61,34 @@ const createFormAssignmentSchema = z.object({
   templateVersionId: z.string().min(1, "Выберите форму."),
   regionId: z.string().min(1, "Выберите регион."),
   dueDate: z.string().optional(),
+});
+
+const createFormTemplateSchema = z.object({
+  formTypeId: z.string().min(1, "Выберите тип формы."),
+  name: z.string().trim().min(3, "Укажите название шаблона."),
+  description: z.string().trim().optional(),
+});
+
+const createFormVersionSchema = z.object({
+  templateId: z.string().min(1, "Выберите шаблон."),
+  reportingYearId: z.string().min(1, "Выберите отчетный год."),
+  title: z.string().trim().min(3, "Укажите название версии."),
+});
+
+const duplicateFormVersionSchema = z.object({
+  sourceVersionId: z.string().min(1, "Выберите исходную версию."),
+  reportingYearId: z.string().min(1, "Выберите отчетный год."),
+  title: z.string().trim().min(3, "Укажите название версии."),
+});
+
+const saveFormVersionSchema = z.object({
+  versionId: z.string().min(1, "Не найдена версия формы."),
+  title: z.string().trim().min(3, "Укажите название версии."),
+  schemaJson: z.string().min(1, "Пустая схема формы."),
+});
+
+const publishFormVersionSchema = z.object({
+  versionId: z.string().min(1, "Не найдена версия формы."),
 });
 
 const createFormAssignmentForAllRegionsSchema = z.object({
@@ -172,6 +208,65 @@ async function getTemplateVersionForAssignment(templateVersionId: string) {
   }
 
   return templateVersion;
+}
+
+async function replaceVersionProjection(params: {
+  templateVersionId: string;
+  schema: z.infer<typeof formBuilderSchema>;
+}) {
+  const projectedFields = projectSchemaToFields(params.schema);
+
+  await prisma.$transaction([
+    prisma.formField.deleteMany({
+      where: { templateVersionId: params.templateVersionId },
+    }),
+    ...projectedFields.map((field) =>
+      prisma.formField.create({
+        data: {
+          templateVersionId: params.templateVersionId,
+          key: field.key,
+          label: field.label,
+          section: field.section,
+          tableId: field.tableId,
+          rowId: field.rowId,
+          rowKey: field.rowKey,
+          columnId: field.columnId,
+          columnKey: field.columnKey,
+          fieldPath: field.fieldPath,
+          fieldType: field.fieldType,
+          unit: field.unit,
+          placeholder: field.placeholder,
+          helpText: field.helpText,
+          sortOrder: field.sortOrder,
+          isRequired: field.isRequired,
+          validationJson: field.validationJson ?? undefined,
+        },
+      }),
+    ),
+  ]);
+}
+
+async function getEditableFormVersion(versionId: string) {
+  await requireSuperadmin();
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: { id: versionId },
+    include: {
+      template: {
+        include: {
+          formType: true,
+        },
+      },
+      reportingYear: true,
+      fields: true,
+    },
+  });
+
+  if (!version) {
+    redirect("/admin/forms?error=Версия формы не найдена.");
+  }
+
+  return version;
 }
 
 async function getRegionCenterOrganization(regionId: string) {
@@ -580,6 +675,267 @@ export async function createFormAssignmentAction(formData: FormData) {
       `${assignment.id}|${templateVersion.template.formType.name}|${templateVersion.reportingYear.year}|${regionCenter.region.fullName}`,
     )}`,
   );
+}
+
+export async function createFormTemplateAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = createFormTemplateSchema.safeParse({
+    formTypeId: formData.get("formTypeId"),
+    name: formData.get("name"),
+    description: formData.get("description"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось создать шаблон формы.",
+      )}`,
+    );
+  }
+
+  const existingTemplate = await prisma.formTemplate.findFirst({
+    where: {
+      formTypeId: parsed.data.formTypeId,
+      name: parsed.data.name,
+    },
+  });
+
+  if (existingTemplate) {
+    redirect("/admin/forms?error=Шаблон с таким названием уже существует.");
+  }
+
+  const template = await prisma.formTemplate.create({
+    data: {
+      formTypeId: parsed.data.formTypeId,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+    },
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(`/admin/forms?templateCreated=${encodeURIComponent(template.name)}`);
+}
+
+export async function createFormVersionAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = createFormVersionSchema.safeParse({
+    templateId: formData.get("templateId"),
+    reportingYearId: formData.get("reportingYearId"),
+    title: formData.get("title"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось создать версию формы.",
+      )}`,
+    );
+  }
+
+  const template = await prisma.formTemplate.findUnique({
+    where: { id: parsed.data.templateId },
+    include: {
+      formType: true,
+    },
+  });
+
+  const reportingYear = await prisma.reportingYear.findUnique({
+    where: { id: parsed.data.reportingYearId },
+  });
+
+  if (!template || !reportingYear) {
+    redirect("/admin/forms?error=Не удалось определить шаблон или отчетный год.");
+  }
+
+  const latestVersion = await prisma.formTemplateVersion.findFirst({
+    where: {
+      templateId: parsed.data.templateId,
+      reportingYearId: parsed.data.reportingYearId,
+    },
+    orderBy: { version: "desc" },
+  });
+
+  const nextVersionNumber = (latestVersion?.version ?? 0) + 1;
+  const schema = createDefaultFormSchema({
+    formCode: template.formType.code,
+    title: parsed.data.title,
+    reportingYear: reportingYear.year,
+    description: template.description,
+  });
+
+  const version = await prisma.formTemplateVersion.create({
+    data: {
+      templateId: parsed.data.templateId,
+      reportingYearId: parsed.data.reportingYearId,
+      version: nextVersionNumber,
+      title: parsed.data.title,
+      versionStatus: FormTemplateVersionStatus.DRAFT,
+      schemaJson: schema,
+    },
+  });
+
+  await replaceVersionProjection({
+    templateVersionId: version.id,
+    schema,
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(`/admin/forms/builder/${version.id}`);
+}
+
+export async function duplicateFormVersionAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = duplicateFormVersionSchema.safeParse({
+    sourceVersionId: formData.get("sourceVersionId"),
+    reportingYearId: formData.get("reportingYearId"),
+    title: formData.get("title"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось дублировать версию формы.",
+      )}`,
+    );
+  }
+
+  const sourceVersion = await prisma.formTemplateVersion.findUnique({
+    where: { id: parsed.data.sourceVersionId },
+    include: {
+      template: {
+        include: {
+          formType: true,
+        },
+      },
+    },
+  });
+
+  const reportingYear = await prisma.reportingYear.findUnique({
+    where: { id: parsed.data.reportingYearId },
+  });
+
+  if (!sourceVersion || !reportingYear) {
+    redirect("/admin/forms?error=Не удалось определить исходную версию или отчетный год.");
+  }
+
+  const latestVersion = await prisma.formTemplateVersion.findFirst({
+    where: {
+      templateId: sourceVersion.templateId,
+      reportingYearId: parsed.data.reportingYearId,
+    },
+    orderBy: { version: "desc" },
+  });
+
+  const nextVersionNumber = (latestVersion?.version ?? 0) + 1;
+  const sourceSchema = formBuilderSchema.parse(sourceVersion.schemaJson);
+  const duplicatedSchema = duplicateFormSchema(sourceSchema, {
+    title: parsed.data.title,
+    reportingYear: reportingYear.year,
+  });
+
+  const version = await prisma.formTemplateVersion.create({
+    data: {
+      templateId: sourceVersion.templateId,
+      reportingYearId: parsed.data.reportingYearId,
+      version: nextVersionNumber,
+      title: parsed.data.title,
+      versionStatus: FormTemplateVersionStatus.DRAFT,
+      schemaJson: duplicatedSchema,
+    },
+  });
+
+  await replaceVersionProjection({
+    templateVersionId: version.id,
+    schema: duplicatedSchema,
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(`/admin/forms/builder/${version.id}`);
+}
+
+export async function saveFormVersionDraftAction(formData: FormData) {
+  const version = await getEditableFormVersion(String(formData.get("versionId") ?? ""));
+
+  const parsed = saveFormVersionSchema.safeParse({
+    versionId: formData.get("versionId"),
+    title: formData.get("title"),
+    schemaJson: formData.get("schemaJson"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms/builder/${version.id}?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось сохранить черновик формы.",
+      )}`,
+    );
+  }
+
+  if (version.versionStatus === FormTemplateVersionStatus.PUBLISHED) {
+    redirect(
+      `/admin/forms/builder/${version.id}?error=${encodeURIComponent(
+        "Опубликованную версию нельзя редактировать. Создайте новую версию.",
+      )}`,
+    );
+  }
+
+  const rawSchema = JSON.parse(parsed.data.schemaJson);
+  const normalizedSchema = normalizeFormSchema(formBuilderSchema.parse(rawSchema));
+
+  await prisma.formTemplateVersion.update({
+    where: { id: version.id },
+    data: {
+      title: parsed.data.title,
+      schemaJson: normalizedSchema,
+      versionStatus: FormTemplateVersionStatus.DRAFT,
+    },
+  });
+
+  await replaceVersionProjection({
+    templateVersionId: version.id,
+    schema: normalizedSchema,
+  });
+
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/builder/${version.id}`);
+  redirect(`/admin/forms/builder/${version.id}?saved=1`);
+}
+
+export async function publishFormVersionAction(formData: FormData) {
+  const currentUser = await requireSuperadmin();
+
+  const parsed = publishFormVersionSchema.safeParse({
+    versionId: formData.get("versionId"),
+  });
+
+  if (!parsed.success) {
+    redirect("/admin/forms?error=Не удалось опубликовать версию формы.");
+  }
+
+  const version = await getEditableFormVersion(parsed.data.versionId);
+  const schema = normalizeFormSchema(formBuilderSchema.parse(version.schemaJson));
+
+  await prisma.formTemplateVersion.update({
+    where: { id: version.id },
+    data: {
+      title: schema.meta.title,
+      schemaJson: schema,
+      versionStatus: FormTemplateVersionStatus.PUBLISHED,
+      publishedAt: new Date(),
+      publishedById: currentUser.id,
+    },
+  });
+
+  await replaceVersionProjection({
+    templateVersionId: version.id,
+    schema,
+  });
+
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/builder/${version.id}`);
+  redirect(`/admin/forms/builder/${version.id}?published=1`);
 }
 
 export async function createFormAssignmentForAllRegionsAction(formData: FormData) {

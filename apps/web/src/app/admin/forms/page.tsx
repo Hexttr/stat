@@ -1,11 +1,17 @@
+import Link from "next/link";
+
 import {
   createFormAssignmentAction,
   createFormAssignmentForAllRegionsAction,
+  createFormTemplateAction,
+  createFormVersionAction,
   createOperatorFormAssignmentAction,
   createOperatorFormAssignmentsForAllAction,
+  duplicateFormVersionAction,
 } from "@/app/admin/actions";
 import {
   FormAssignmentStatus,
+  FormTemplateVersionStatus,
   OrganizationType,
   RoleType,
 } from "@/generated/prisma/client";
@@ -19,6 +25,19 @@ function formatAssignmentStatus(status: FormAssignmentStatus) {
     case FormAssignmentStatus.PUBLISHED:
       return "Назначено";
     case FormAssignmentStatus.ARCHIVED:
+      return "В архиве";
+    default:
+      return status;
+  }
+}
+
+function formatVersionStatus(status: FormTemplateVersionStatus) {
+  switch (status) {
+    case FormTemplateVersionStatus.DRAFT:
+      return "Черновик";
+    case FormTemplateVersionStatus.PUBLISHED:
+      return "Опубликована";
+    case FormTemplateVersionStatus.ARCHIVED:
       return "В архиве";
     default:
       return status;
@@ -46,78 +65,109 @@ export default async function AdminFormsPage({
         },
       };
 
-  const [templateVersions, regions, assignments, operators, resolvedSearchParams] =
-    await Promise.all([
-      prisma.formTemplateVersion.findMany({
-        include: {
-          template: {
-            include: {
-              formType: true,
-            },
+  const [
+    formTypes,
+    reportingYears,
+    templates,
+    templateVersions,
+    regions,
+    assignments,
+    operators,
+    resolvedSearchParams,
+  ] = await Promise.all([
+    prisma.formType.findMany({
+      orderBy: { code: "asc" },
+    }),
+    prisma.reportingYear.findMany({
+      orderBy: { year: "desc" },
+    }),
+    prisma.formTemplate.findMany({
+      include: {
+        formType: true,
+        versions: {
+          include: {
+            reportingYear: true,
           },
-          reportingYear: true,
-          fields: true,
+          orderBy: [{ reportingYear: { year: "desc" } }, { version: "desc" }],
         },
-        orderBy: [{ reportingYear: { year: "desc" } }, { title: "asc" }],
-      }),
-      prisma.region.findMany({
-        where: regionFilter,
-        orderBy: { fullName: "asc" },
-      }),
-      prisma.formAssignment.findMany({
-        where: {
-          region: regionFilter,
-        },
-        include: {
-          templateVersion: {
-            include: {
-              template: {
-                include: {
-                  formType: true,
-                },
-              },
-              reportingYear: true,
-            },
-          },
-          region: true,
-          organization: true,
-        },
-        orderBy: [{ createdAt: "desc" }],
-      }),
-      prisma.user.findMany({
-        where: {
-          memberships: {
-            some: {
-              role: RoleType.OPERATOR,
-              organization: {
-                region: regionFilter,
-              },
-            },
+      },
+      orderBy: [{ formType: { code: "asc" } }, { name: "asc" }],
+    }),
+    prisma.formTemplateVersion.findMany({
+      include: {
+        template: {
+          include: {
+            formType: true,
           },
         },
-        include: {
-          memberships: {
-            where: {
-              role: RoleType.OPERATOR,
-            },
-            include: {
-              organization: {
-                include: {
-                  region: true,
-                },
+        reportingYear: true,
+        fields: true,
+      },
+      orderBy: [{ reportingYear: { year: "desc" } }, { title: "asc" }],
+    }),
+    prisma.region.findMany({
+      where: regionFilter,
+      orderBy: { fullName: "asc" },
+    }),
+    prisma.formAssignment.findMany({
+      where: {
+        region: regionFilter,
+      },
+      include: {
+        templateVersion: {
+          include: {
+            template: {
+              include: {
+                formType: true,
               },
             },
+            reportingYear: true,
           },
         },
-        orderBy: { fullName: "asc" },
-      }),
-      searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
-    ]);
+        region: true,
+        organization: true,
+      },
+      orderBy: [{ createdAt: "desc" }],
+    }),
+    prisma.user.findMany({
+      where: {
+        memberships: {
+          some: {
+            role: RoleType.OPERATOR,
+            organization: {
+              region: regionFilter,
+            },
+          },
+        },
+      },
+      include: {
+        memberships: {
+          where: {
+            role: RoleType.OPERATOR,
+          },
+          include: {
+            organization: {
+              include: {
+                region: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { fullName: "asc" },
+    }),
+    searchParams ??
+      Promise.resolve({} as Record<string, string | string[] | undefined>),
+  ]);
 
   const params = resolvedSearchParams;
   const createdRaw =
     typeof params.created === "string" ? decodeURIComponent(params.created) : null;
   const created = createdRaw ? createdRaw.split("|") : null;
+  const templateCreated =
+    typeof params.templateCreated === "string"
+      ? decodeURIComponent(params.templateCreated)
+      : null;
   const bulkCreatedRaw =
     typeof params.bulkCreated === "string"
       ? decodeURIComponent(params.bulkCreated)
@@ -132,7 +182,7 @@ export default async function AdminFormsPage({
     typeof params.error === "string" ? decodeURIComponent(params.error) : null;
 
   const publishedVersions = templateVersions.filter(
-    (version) => version.status === FormAssignmentStatus.PUBLISHED,
+    (version) => version.versionStatus === FormTemplateVersionStatus.PUBLISHED,
   );
   const regionIncomingAssignments = assignments.filter(
     (assignment) => assignment.organization.type === OrganizationType.REGION_CENTER,
@@ -144,13 +194,273 @@ export default async function AdminFormsPage({
   return (
     <div className="space-y-6">
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h2 className="text-2xl font-semibold text-slate-950">
-          Формы и назначения
-        </h2>
+        <h2 className="text-2xl font-semibold text-slate-950">Каталог форм</h2>
         <p className="mt-3 max-w-3xl text-slate-600">
-          Суперадмин публикует и направляет исходные формы региональным админам.
-          Региональный админ на этой же странице видит, какие формы уже
-          назначены его региону на конкретный год.
+          Суперадмин управляет шаблонами и версиями форм по годам. Для каждой
+          версии можно открыть table-first редактор, сохранить черновик и после
+          публикации направить форму вниз по оргструктуре.
+        </p>
+
+        {templateCreated ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Шаблон `{templateCreated}` успешно создан.
+          </p>
+        ) : null}
+
+        {error ? (
+          <p className="mt-6 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </p>
+        ) : null}
+
+        {isSuperadmin ? (
+          <div className="mt-8 grid gap-6 xl:grid-cols-2">
+            <form
+              action={createFormTemplateAction}
+              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
+            >
+              <div className="space-y-2">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
+                  Новый шаблон
+                </p>
+                <label className="text-sm font-medium text-slate-700" htmlFor="formTypeId">
+                  Тип формы
+                </label>
+                <select
+                  id="formTypeId"
+                  name="formTypeId"
+                  defaultValue={formTypes[0]?.id}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                >
+                  {formTypes.map((formType) => (
+                    <option key={formType.id} value={formType.id}>
+                      {formType.code} — {formType.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700" htmlFor="templateName">
+                  Название шаблона
+                </label>
+                <input
+                  id="templateName"
+                  name="name"
+                  placeholder="Форма F12 — хирургический профиль"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700" htmlFor="templateDescription">
+                  Описание
+                </label>
+                <textarea
+                  id="templateDescription"
+                  name="description"
+                  rows={3}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                  placeholder="Краткое описание назначения шаблона"
+                />
+              </div>
+
+              <div>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                >
+                  Создать шаблон
+                </button>
+              </div>
+            </form>
+
+            <form
+              action={createFormVersionAction}
+              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
+            >
+              <div className="space-y-2">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
+                  Новая версия
+                </p>
+                <label className="text-sm font-medium text-slate-700" htmlFor="templateId">
+                  Шаблон
+                </label>
+                <select
+                  id="templateId"
+                  name="templateId"
+                  defaultValue={templates[0]?.id}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                >
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.formType.code} — {template.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700" htmlFor="reportingYearId">
+                  Отчетный год
+                </label>
+                <select
+                  id="reportingYearId"
+                  name="reportingYearId"
+                  defaultValue={reportingYears[0]?.id}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                >
+                  {reportingYears.map((reportingYear) => (
+                    <option key={reportingYear.id} value={reportingYear.id}>
+                      {reportingYear.year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700" htmlFor="versionTitle">
+                  Название версии
+                </label>
+                <input
+                  id="versionTitle"
+                  name="title"
+                  placeholder="Форма F12 за 2026"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                />
+              </div>
+
+              <div>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
+                >
+                  Создать draft-версию
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : (
+          <p className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Создание и публикация шаблонов доступны суперадмину. Ниже вы видите
+            версии форм и назначенные вам публикации.
+          </p>
+        )}
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+        <h2 className="text-2xl font-semibold text-slate-950">Шаблоны и версии</h2>
+        <div className="mt-6 space-y-6">
+          {templates.map((template) => (
+            <article
+              key={template.id}
+              className="rounded-3xl border border-slate-200 bg-slate-50 p-6"
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
+                    {template.formType.code}
+                  </p>
+                  <h3 className="mt-2 text-xl font-semibold text-slate-950">
+                    {template.name}
+                  </h3>
+                  <p className="mt-2 text-slate-600">
+                    {template.description || "Без описания"}
+                  </p>
+                </div>
+
+                {isSuperadmin && template.versions.length > 0 ? (
+                  <form
+                    action={duplicateFormVersionAction}
+                    className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:min-w-[320px]"
+                  >
+                    <input
+                      type="hidden"
+                      name="sourceVersionId"
+                      value={template.versions[0]?.id}
+                    />
+                    <div className="space-y-2">
+                      <label
+                        className="text-sm font-medium text-slate-700"
+                        htmlFor={`duplicate-year-${template.id}`}
+                      >
+                        Скопировать последнюю версию в год
+                      </label>
+                      <select
+                        id={`duplicate-year-${template.id}`}
+                        name="reportingYearId"
+                        defaultValue={reportingYears[0]?.id}
+                        className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                      >
+                        {reportingYears.map((reportingYear) => (
+                          <option key={reportingYear.id} value={reportingYear.id}>
+                            {reportingYear.year}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <input
+                      name="title"
+                      defaultValue={`${template.name} — новая версия`}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Дублировать в новый draft
+                    </button>
+                  </form>
+                ) : null}
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {template.versions.map((version) => (
+                  <article
+                    key={version.id}
+                    className="rounded-2xl border border-slate-200 bg-white p-5"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-medium text-slate-950">{version.title}</p>
+                      <span
+                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                          version.versionStatus === FormTemplateVersionStatus.PUBLISHED
+                            ? "bg-emerald-50 text-emerald-700"
+                            : version.versionStatus === FormTemplateVersionStatus.ARCHIVED
+                              ? "bg-slate-100 text-slate-500"
+                              : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {formatVersionStatus(version.versionStatus)}
+                      </span>
+                    </div>
+
+                    <p className="mt-3 text-sm text-slate-600">
+                      Год: {version.reportingYear.year}
+                    </p>
+                    <p className="text-sm text-slate-600">Версия: v{version.version}</p>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <Link
+                        href={`/admin/forms/builder/${version.id}`}
+                        className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                      >
+                        Открыть редактор
+                      </Link>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+        <h2 className="text-2xl font-semibold text-slate-950">Назначения форм</h2>
+        <p className="mt-3 max-w-3xl text-slate-600">
+          После публикации версия формы может быть направлена региональным
+          администраторам, а затем распределена операторам.
         </p>
 
         {created ? (
@@ -174,12 +484,6 @@ export default async function AdminFormsPage({
           </p>
         ) : null}
 
-        {error ? (
-          <p className="mt-6 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
-
         {isSuperadmin ? (
           <div className="mt-8 grid gap-6 xl:grid-cols-2">
             <form
@@ -192,12 +496,12 @@ export default async function AdminFormsPage({
                 </p>
                 <label
                   className="text-sm font-medium text-slate-700"
-                  htmlFor="templateVersionId"
+                  htmlFor="assignmentTemplateVersionId"
                 >
-                  Версия формы
+                  Опубликованная версия формы
                 </label>
                 <select
-                  id="templateVersionId"
+                  id="assignmentTemplateVersionId"
                   name="templateVersionId"
                   defaultValue={publishedVersions[0]?.id}
                   className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
@@ -263,7 +567,7 @@ export default async function AdminFormsPage({
                   className="text-sm font-medium text-slate-700"
                   htmlFor="templateVersionIdAllRegions"
                 >
-                  Версия формы
+                  Опубликованная версия формы
                 </label>
                 <select
                   id="templateVersionIdAllRegions"
@@ -296,8 +600,8 @@ export default async function AdminFormsPage({
               </div>
 
               <div className="rounded-2xl bg-white px-4 py-3 text-sm text-slate-600">
-                Одна операция назначит выбранную форму всем региональным центрам,
-                которым она еще не была направлена.
+                Одна операция назначит выбранную форму всем регионам, которым она
+                еще не была направлена.
               </div>
 
               <div>
@@ -313,8 +617,8 @@ export default async function AdminFormsPage({
         ) : (
           <div className="mt-6 space-y-6">
             <p className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Вы видите список форм, которые были назначены вашим регионам
-              суперадмином, и можете распределить их операторам.
+              Вы видите опубликованные формы, которые были назначены вашим
+              регионам суперадмином, и можете распределить их операторам.
             </p>
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -330,7 +634,7 @@ export default async function AdminFormsPage({
                     className="text-sm font-medium text-slate-700"
                     htmlFor="regionAssignmentId"
                   >
-                    Форма, полученная от суперадмина
+                    Входящее назначение региону
                   </label>
                   <select
                     id="regionAssignmentId"
@@ -413,7 +717,7 @@ export default async function AdminFormsPage({
                     className="text-sm font-medium text-slate-700"
                     htmlFor="regionAssignmentIdAllOperators"
                   >
-                    Форма, полученная от суперадмина
+                    Входящее назначение региону
                   </label>
                   <select
                     id="regionAssignmentIdAllOperators"
@@ -463,35 +767,6 @@ export default async function AdminFormsPage({
             </div>
           </div>
         )}
-      </section>
-
-      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h2 className="text-2xl font-semibold text-slate-950">
-          Каталог версий форм
-        </h2>
-        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {templateVersions.map((version) => (
-            <article
-              key={version.id}
-              className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
-            >
-              <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                {version.template.formType.code}
-              </p>
-              <h3 className="mt-2 text-lg font-semibold text-slate-950">
-                {version.template.formType.name}
-              </h3>
-              <p className="mt-2 text-sm text-slate-600">{version.title}</p>
-              <p className="mt-3 text-sm text-slate-500">
-                Год: {version.reportingYear.year}
-              </p>
-              <p className="text-sm text-slate-500">Поля: {version.fields.length}</p>
-              <p className="text-sm text-slate-500">
-                Статус: {formatAssignmentStatus(version.status)}
-              </p>
-            </article>
-          ))}
-        </div>
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
