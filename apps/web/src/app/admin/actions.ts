@@ -55,6 +55,22 @@ const createFormAssignmentSchema = z.object({
   dueDate: z.string().optional(),
 });
 
+const createFormAssignmentForAllRegionsSchema = z.object({
+  templateVersionId: z.string().min(1, "Выберите форму."),
+  dueDate: z.string().optional(),
+});
+
+const createOperatorFormAssignmentSchema = z.object({
+  regionAssignmentId: z.string().min(1, "Выберите форму, назначенную региону."),
+  organizationId: z.string().min(1, "Выберите оператора."),
+  dueDate: z.string().optional(),
+});
+
+const createOperatorFormAssignmentsForAllSchema = z.object({
+  regionAssignmentId: z.string().min(1, "Выберите форму, назначенную региону."),
+  dueDate: z.string().optional(),
+});
+
 async function getScopedOperator(currentUserId: string, operatorId: string) {
   const currentUser = await requireAdminUser();
   const scope = getAdminScope(currentUser);
@@ -136,6 +152,90 @@ async function getParentOrganizationIdForRegion(
       (membership) => membership.organization.regionId === regionId,
     )?.organizationId ?? null
   );
+}
+
+async function getTemplateVersionForAssignment(templateVersionId: string) {
+  const templateVersion = await prisma.formTemplateVersion.findUnique({
+    where: { id: templateVersionId },
+    include: {
+      template: {
+        include: {
+          formType: true,
+        },
+      },
+      reportingYear: true,
+    },
+  });
+
+  if (!templateVersion) {
+    redirect("/admin/forms?error=Выбранная версия формы не найдена.");
+  }
+
+  return templateVersion;
+}
+
+async function getRegionCenterOrganization(regionId: string) {
+  const regionCenter = await prisma.organization.findFirst({
+    where: {
+      regionId,
+      type: OrganizationType.REGION_CENTER,
+    },
+    include: {
+      region: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (!regionCenter) {
+    redirect("/admin/forms?error=Для региона не найден региональный центр.");
+  }
+
+  return regionCenter;
+}
+
+async function getScopedRegionAssignment(regionAssignmentId: string) {
+  const currentUser = await requireAdminUser();
+  const scope = getAdminScope(currentUser);
+
+  const assignment = await prisma.formAssignment.findFirst({
+    where: {
+      id: regionAssignmentId,
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      region: scope.isSuperadmin
+        ? {
+            code: {
+              not: "RUSSIAN_FEDERATION",
+            },
+          }
+        : {
+            id: {
+              in: scope.manageableRegionIds ?? [],
+            },
+          },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          template: {
+            include: {
+              formType: true,
+            },
+          },
+          reportingYear: true,
+        },
+      },
+      region: true,
+      organization: true,
+    },
+  });
+
+  if (!assignment) {
+    redirect("/admin/forms?error=Назначение формы региону не найдено или недоступно.");
+  }
+
+  return { currentUser, scope, assignment };
 }
 
 export async function createUserAction(formData: FormData) {
@@ -444,36 +544,10 @@ export async function createFormAssignmentAction(formData: FormData) {
     );
   }
 
-  const templateVersion = await prisma.formTemplateVersion.findUnique({
-    where: { id: parsed.data.templateVersionId },
-    include: {
-      template: {
-        include: {
-          formType: true,
-        },
-      },
-      reportingYear: true,
-    },
-  });
-
-  if (!templateVersion) {
-    redirect("/admin/forms?error=Выбранная версия формы не найдена.");
-  }
-
-  const regionCenter = await prisma.organization.findFirst({
-    where: {
-      regionId: parsed.data.regionId,
-      type: OrganizationType.REGION_CENTER,
-    },
-    include: {
-      region: true,
-    },
-    orderBy: { createdAt: "asc" },
-  });
-
-  if (!regionCenter) {
-    redirect("/admin/forms?error=Для региона не найден региональный центр.");
-  }
+  const templateVersion = await getTemplateVersionForAssignment(
+    parsed.data.templateVersionId,
+  );
+  const regionCenter = await getRegionCenterOrganization(parsed.data.regionId);
 
   const existingAssignment = await prisma.formAssignment.findFirst({
     where: {
@@ -504,6 +578,263 @@ export async function createFormAssignmentAction(formData: FormData) {
   redirect(
     `/admin/forms?created=${encodeURIComponent(
       `${assignment.id}|${templateVersion.template.formType.name}|${templateVersion.reportingYear.year}|${regionCenter.region.fullName}`,
+    )}`,
+  );
+}
+
+export async function createFormAssignmentForAllRegionsAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = createFormAssignmentForAllRegionsSchema.safeParse({
+    templateVersionId: formData.get("templateVersionId"),
+    dueDate: formData.get("dueDate"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось назначить форму всем регионам.",
+      )}`,
+    );
+  }
+
+  const templateVersion = await getTemplateVersionForAssignment(
+    parsed.data.templateVersionId,
+  );
+
+  const regionCenters = await prisma.organization.findMany({
+    where: {
+      type: OrganizationType.REGION_CENTER,
+      region: {
+        code: {
+          not: "RUSSIAN_FEDERATION",
+        },
+      },
+    },
+    include: {
+      region: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const existingAssignments = await prisma.formAssignment.findMany({
+    where: {
+      templateVersionId: templateVersion.id,
+      reportingYearId: templateVersion.reportingYearId,
+      organizationId: {
+        in: regionCenters.map((organization) => organization.id),
+      },
+    },
+    select: {
+      organizationId: true,
+    },
+  });
+
+  const existingOrganizationIds = new Set(
+    existingAssignments.map((assignment) => assignment.organizationId),
+  );
+
+  const organizationsToAssign = regionCenters.filter(
+    (organization) => !existingOrganizationIds.has(organization.id),
+  );
+
+  if (organizationsToAssign.length === 0) {
+    redirect("/admin/forms?error=Эта форма уже назначена всем регионам.");
+  }
+
+  const createdAssignments = await prisma.$transaction(
+    organizationsToAssign.map((organization) =>
+      prisma.formAssignment.create({
+        data: {
+          templateVersionId: templateVersion.id,
+          reportingYearId: templateVersion.reportingYearId,
+          regionId: organization.regionId,
+          organizationId: organization.id,
+          status: FormAssignmentStatus.PUBLISHED,
+          dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
+        },
+      }),
+    ),
+  );
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/forms");
+  redirect(
+    `/admin/forms?bulkCreated=${encodeURIComponent(
+      `${createdAssignments.length}|${templateVersion.template.formType.name}|${templateVersion.reportingYear.year}|regions`,
+    )}`,
+  );
+}
+
+export async function createOperatorFormAssignmentAction(formData: FormData) {
+  const { assignment, scope } = await getScopedRegionAssignment(
+    String(formData.get("regionAssignmentId") ?? ""),
+  );
+
+  const parsed = createOperatorFormAssignmentSchema.safeParse({
+    regionAssignmentId: formData.get("regionAssignmentId"),
+    organizationId: formData.get("organizationId"),
+    dueDate: formData.get("dueDate"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось назначить форму оператору.",
+      )}`,
+    );
+  }
+
+  const operatorOrganization = await prisma.organization.findFirst({
+    where: {
+      id: parsed.data.organizationId,
+      type: OrganizationType.MEDICAL_FACILITY,
+      regionId: assignment.regionId,
+      memberships: {
+        some: {
+          role: RoleType.OPERATOR,
+        },
+      },
+      ...(scope.isSuperadmin
+        ? {}
+        : {
+            regionId: {
+              in: scope.manageableRegionIds ?? [],
+            },
+          }),
+    },
+    include: {
+      region: true,
+    },
+  });
+
+  if (!operatorOrganization) {
+    redirect("/admin/forms?error=Выбранный оператор или его организация не найдены.");
+  }
+
+  const existingAssignment = await prisma.formAssignment.findFirst({
+    where: {
+      templateVersionId: assignment.templateVersionId,
+      reportingYearId: assignment.reportingYearId,
+      regionId: assignment.regionId,
+      organizationId: operatorOrganization.id,
+    },
+  });
+
+  if (existingAssignment) {
+    redirect("/admin/forms?error=Эта форма уже назначена выбранному оператору.");
+  }
+
+  await prisma.formAssignment.create({
+    data: {
+      templateVersionId: assignment.templateVersionId,
+      reportingYearId: assignment.reportingYearId,
+      regionId: assignment.regionId,
+      organizationId: operatorOrganization.id,
+      status: FormAssignmentStatus.PUBLISHED,
+      dueDate: parsed.data.dueDate
+        ? new Date(parsed.data.dueDate)
+        : assignment.dueDate,
+    },
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(
+    `/admin/forms?operatorCreated=${encodeURIComponent(
+      `${assignment.templateVersion.template.formType.name}|${operatorOrganization.name}|${assignment.region.fullName}`,
+    )}`,
+  );
+}
+
+export async function createOperatorFormAssignmentsForAllAction(formData: FormData) {
+  const { assignment, scope } = await getScopedRegionAssignment(
+    String(formData.get("regionAssignmentId") ?? ""),
+  );
+
+  const parsed = createOperatorFormAssignmentsForAllSchema.safeParse({
+    regionAssignmentId: formData.get("regionAssignmentId"),
+    dueDate: formData.get("dueDate"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось назначить форму всем операторам.",
+      )}`,
+    );
+  }
+
+  const operatorOrganizations = await prisma.organization.findMany({
+    where: {
+      type: OrganizationType.MEDICAL_FACILITY,
+      regionId: assignment.regionId,
+      memberships: {
+        some: {
+          role: RoleType.OPERATOR,
+        },
+      },
+      ...(scope.isSuperadmin
+        ? {}
+        : {
+            regionId: {
+              in: scope.manageableRegionIds ?? [],
+            },
+          }),
+    },
+    orderBy: { name: "asc" },
+  });
+
+  if (operatorOrganizations.length === 0) {
+    redirect("/admin/forms?error=В этом регионе пока нет операторов для назначения формы.");
+  }
+
+  const existingAssignments = await prisma.formAssignment.findMany({
+    where: {
+      templateVersionId: assignment.templateVersionId,
+      reportingYearId: assignment.reportingYearId,
+      regionId: assignment.regionId,
+      organizationId: {
+        in: operatorOrganizations.map((organization) => organization.id),
+      },
+    },
+    select: {
+      organizationId: true,
+    },
+  });
+
+  const existingOrganizationIds = new Set(
+    existingAssignments.map((existingAssignment) => existingAssignment.organizationId),
+  );
+
+  const organizationsToAssign = operatorOrganizations.filter(
+    (organization) => !existingOrganizationIds.has(organization.id),
+  );
+
+  if (organizationsToAssign.length === 0) {
+    redirect("/admin/forms?error=Эта форма уже назначена всем операторам региона.");
+  }
+
+  const createdAssignments = await prisma.$transaction(
+    organizationsToAssign.map((organization) =>
+      prisma.formAssignment.create({
+        data: {
+          templateVersionId: assignment.templateVersionId,
+          reportingYearId: assignment.reportingYearId,
+          regionId: assignment.regionId,
+          organizationId: organization.id,
+          status: FormAssignmentStatus.PUBLISHED,
+          dueDate: parsed.data.dueDate
+            ? new Date(parsed.data.dueDate)
+            : assignment.dueDate,
+        },
+      }),
+    ),
+  );
+
+  revalidatePath("/admin/forms");
+  redirect(
+    `/admin/forms?bulkCreated=${encodeURIComponent(
+      `${createdAssignments.length}|${assignment.templateVersion.template.formType.name}|${assignment.templateVersion.reportingYear.year}|operators`,
     )}`,
   );
 }
