@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") ?? "/admin/users";
+  const callbackUrl = searchParams.get("callbackUrl") ?? "/admin";
   const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
 
@@ -47,7 +47,7 @@ export function LoginForm() {
           name="email"
           type="email"
           required
-          className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none ring-0 transition focus:border-blue-500"
+          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-0 transition placeholder:text-slate-400 focus:border-blue-500"
           placeholder="admin@stat.local"
         />
       </div>
@@ -62,7 +62,7 @@ export function LoginForm() {
           type="password"
           required
           minLength={8}
-          className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none ring-0 transition focus:border-blue-500"
+          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-0 transition placeholder:text-slate-400 focus:border-blue-500"
           placeholder="Введите пароль"
         />
       </div>

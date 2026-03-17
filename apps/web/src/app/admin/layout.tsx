@@ -1,14 +1,16 @@
 import Link from "next/link";
 
 import { SignOutForm } from "@/app/admin/sign-out-form";
-import { requireAuthenticatedUser } from "@/lib/access";
+import { hasRole, requireAdminUser } from "@/lib/access";
+import { RoleType } from "@/generated/prisma/client";
 
 export default async function AdminLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const user = await requireAuthenticatedUser();
+  const user = await requireAdminUser();
+  const isSuperadmin = hasRole(user, [RoleType.SUPERADMIN]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -35,11 +37,19 @@ export default async function AdminLayout({
         <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <nav className="space-y-2">
             <Link
-              href="/admin/users"
-              className="block rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white"
+              href="/admin"
+              className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
             >
-              Пользователи
+              Обзор
             </Link>
+            {isSuperadmin ? (
+              <Link
+                href="/admin/users"
+                className="block rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white"
+              >
+                Пользователи
+              </Link>
+            ) : null}
           </nav>
         </aside>
 

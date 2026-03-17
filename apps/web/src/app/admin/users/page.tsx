@@ -89,7 +89,7 @@ export default async function AdminUsersPage({
               name="fullName"
               required
               minLength={3}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
               placeholder="Иванов Иван Иванович"
             />
           </div>
@@ -103,7 +103,7 @@ export default async function AdminUsersPage({
               name="email"
               type="email"
               required
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
               placeholder="region@example.ru"
             />
           </div>
@@ -118,7 +118,7 @@ export default async function AdminUsersPage({
               type="password"
               required
               minLength={8}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
               placeholder="Минимум 8 символов"
             />
           </div>
@@ -131,7 +131,7 @@ export default async function AdminUsersPage({
               id="role"
               name="role"
               defaultValue={RoleType.REGION_ADMIN}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
             >
               <option value={RoleType.SUPERADMIN}>Суперадмин</option>
               <option value={RoleType.REGION_ADMIN}>Региональный админ</option>
@@ -149,7 +149,7 @@ export default async function AdminUsersPage({
             <select
               id="organizationId"
               name="organizationId"
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
               defaultValue={organizations[0]?.id}
             >
               {organizations.map((organization) => (

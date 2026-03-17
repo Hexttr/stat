@@ -37,15 +37,32 @@ export async function requireAuthenticatedUser() {
   return user;
 }
 
+export function hasRole(
+  user: NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>,
+  roles: RoleType[],
+) {
+  return user.memberships.some((membership) => roles.includes(membership.role));
+}
+
+export async function requireAdminUser() {
+  const user = await requireAuthenticatedUser();
+
+  const isAdmin = hasRole(user, [RoleType.SUPERADMIN, RoleType.REGION_ADMIN]);
+
+  if (!isAdmin) {
+    redirect("/");
+  }
+
+  return user;
+}
+
 export async function requireSuperadmin() {
   const user = await requireAuthenticatedUser();
 
-  const isSuperadmin = user.memberships.some(
-    (membership) => membership.role === RoleType.SUPERADMIN,
-  );
+  const isSuperadmin = hasRole(user, [RoleType.SUPERADMIN]);
 
   if (!isSuperadmin) {
-    redirect("/");
+    redirect("/admin");
   }
 
   return user;
