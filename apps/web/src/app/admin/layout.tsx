@@ -43,6 +43,12 @@ export default async function AdminLayout({
             >
               Обзор
             </Link>
+            <Link
+              href="/admin/forms"
+              className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
+            >
+              Формы
+            </Link>
             {isSuperadmin || isRegionAdmin ? (
               <Link
                 href="/admin/operators"

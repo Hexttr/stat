@@ -3,6 +3,7 @@ import "dotenv/config";
 import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import {
+  FormAssignmentStatus,
   OrganizationType,
   PrismaClient,
   RoleType,
@@ -124,6 +125,32 @@ const formTypes = [
   { code: "F30", name: "Форма F30", description: "Базовая историческая форма из архива 2024 года." },
 ];
 
+const seededTemplateFields: Record<
+  string,
+  { key: string; label: string; fieldType: string; unit?: string; isRequired?: boolean }[]
+> = {
+  F12: [
+    { key: "pediatric_surgery_beds", label: "Число коек хирургических для детей", fieldType: "number", unit: "шт.", isRequired: true },
+    { key: "pediatric_patients", label: "Число детей, получивших помощь", fieldType: "number", unit: "чел." },
+    { key: "staff_surgeons", label: "Число врачей-хирургов", fieldType: "number", unit: "чел." },
+  ],
+  F14: [
+    { key: "event_count", label: "Количество мероприятий", fieldType: "number", unit: "шт.", isRequired: true },
+    { key: "participant_count", label: "Количество участников", fieldType: "number", unit: "чел." },
+    { key: "program_hours", label: "Объем программы", fieldType: "number", unit: "час." },
+  ],
+  F19: [
+    { key: "operations_total", label: "Общее число операций", fieldType: "number", unit: "шт.", isRequired: true },
+    { key: "complications_total", label: "Число осложнений", fieldType: "number", unit: "шт." },
+    { key: "postoperative_beds", label: "Послеоперационные койки", fieldType: "number", unit: "шт." },
+  ],
+  F30: [
+    { key: "medical_units", label: "Количество подразделений", fieldType: "number", unit: "шт.", isRequired: true },
+    { key: "specialists_total", label: "Количество специалистов", fieldType: "number", unit: "чел." },
+    { key: "equipment_units", label: "Количество единиц оборудования", fieldType: "number", unit: "шт." },
+  ],
+};
+
 async function seedRegions() {
   for (const region of regions) {
     const createdRegion = await prisma.region.upsert({
@@ -178,6 +205,106 @@ async function seedFormTypes() {
       },
       create: formType,
     });
+  }
+}
+
+async function seedFormTemplates() {
+  const years = await prisma.reportingYear.findMany({
+    orderBy: { year: "asc" },
+  });
+
+  const formTypeEntities = await prisma.formType.findMany();
+
+  for (const formType of formTypeEntities) {
+    const template = await prisma.formTemplate.upsert({
+      where: {
+        id: `${formType.code.toLowerCase()}-template`,
+      },
+      update: {
+        name: `${formType.name} — базовый шаблон`,
+        description: `Базовый шаблон для ${formType.name}.`,
+      },
+      create: {
+        id: `${formType.code.toLowerCase()}-template`,
+        formTypeId: formType.id,
+        name: `${formType.name} — базовый шаблон`,
+        description: `Базовый шаблон для ${formType.name}.`,
+      },
+    });
+
+    const fields = seededTemplateFields[formType.code] ?? [];
+
+    for (const reportingYear of years) {
+      const schemaJson = {
+        code: formType.code,
+        reportingYear: reportingYear.year,
+        sections: [
+          {
+            key: "main",
+            title: "Основные показатели",
+            fields,
+          },
+        ],
+      };
+
+      const version = await prisma.formTemplateVersion.upsert({
+        where: {
+          templateId_reportingYearId_version: {
+            templateId: template.id,
+            reportingYearId: reportingYear.id,
+            version: 1,
+          },
+        },
+        update: {
+          title: `${formType.name} за ${reportingYear.year}`,
+          status:
+            reportingYear.year <= 2025
+              ? FormAssignmentStatus.PUBLISHED
+              : FormAssignmentStatus.DRAFT,
+          schemaJson,
+        },
+        create: {
+          templateId: template.id,
+          reportingYearId: reportingYear.id,
+          version: 1,
+          title: `${formType.name} за ${reportingYear.year}`,
+          status:
+            reportingYear.year <= 2025
+              ? FormAssignmentStatus.PUBLISHED
+              : FormAssignmentStatus.DRAFT,
+          schemaJson,
+        },
+      });
+
+      for (const [index, field] of fields.entries()) {
+        await prisma.formField.upsert({
+          where: {
+            templateVersionId_key: {
+              templateVersionId: version.id,
+              key: field.key,
+            },
+          },
+          update: {
+            label: field.label,
+            fieldType: field.fieldType,
+            unit: field.unit ?? null,
+            isRequired: field.isRequired ?? false,
+            sortOrder: index,
+            section: "Основные показатели",
+          },
+          create: {
+            templateVersionId: version.id,
+            key: field.key,
+            label: field.label,
+            fieldType: field.fieldType,
+            unit: field.unit ?? null,
+            isRequired: field.isRequired ?? false,
+            sortOrder: index,
+            section: "Основные показатели",
+          },
+        });
+      }
+    }
   }
 }
 
@@ -254,6 +381,7 @@ async function main() {
   await seedRegions();
   await seedReportingYears();
   await seedFormTypes();
+  await seedFormTemplates();
   await seedSuperadmin();
 
   console.log(`Seed complete: ${regions.length} regions, ${reportingYears.length} reporting years, ${formTypes.length} form types.`);

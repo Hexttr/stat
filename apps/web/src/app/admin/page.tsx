@@ -36,6 +36,15 @@ export default async function AdminPage() {
         <h2 className="text-2xl font-semibold text-slate-950">Доступные действия</h2>
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           <article className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+            <p className="font-medium text-slate-950">Формы</p>
+            <p className="mt-2 text-slate-600">
+              {isSuperadmin
+                ? "Вы публикуете исходные версии форм и направляете их региональным админам."
+                : "Вы видите формы, которые суперадмин назначил вашему региону на нужный год."}
+            </p>
+          </article>
+
+          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
             <p className="font-medium text-slate-950">Операторы</p>
             <p className="mt-2 text-slate-600">
               {isRegionAdmin
