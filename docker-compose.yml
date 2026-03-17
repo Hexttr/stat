@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: stat
+      POSTGRES_USER: stat
+      POSTGRES_PASSWORD: stat
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stat -d stat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

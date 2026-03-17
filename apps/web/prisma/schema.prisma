@@ -1,0 +1,397 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RoleType {
+  SUPERADMIN
+  REGION_ADMIN
+  OPERATOR
+}
+
+enum OrganizationType {
+  FEDERAL_CENTER
+  REGION_CENTER
+  CITY_CENTER
+  MEDICAL_FACILITY
+}
+
+enum FormAssignmentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED_BY_REGION
+  APPROVED_BY_SUPERADMIN
+  REJECTED
+}
+
+enum ImportFileStatus {
+  NEW
+  CLASSIFIED
+  EXTRACTED
+  NORMALIZED
+  NEEDS_REVIEW
+  IMPORTED
+  FAILED
+}
+
+enum ImportIssueSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
+model User {
+  id            String           @id @default(cuid())
+  email         String           @unique
+  passwordHash  String?
+  fullName      String
+  isActive      Boolean          @default(true)
+  lastLoginAt   DateTime?
+  memberships   UserMembership[]
+  submissions   Submission[]     @relation("SubmissionSubmittedBy")
+  reviews       Submission[]     @relation("SubmissionReviewedBy")
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model Region {
+  id                String             @id @default(cuid())
+  code              String             @unique
+  shortName         String             @unique
+  fullName          String             @unique
+  organizations     Organization[]
+  assignments       FormAssignment[]
+  aggregatedMetrics AggregatedMetric[]
+  importFiles       ImportFile[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model Organization {
+  id             String            @id @default(cuid())
+  name           String
+  type           OrganizationType
+  regionId       String
+  parentId       String?
+  region         Region            @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  parent         Organization?     @relation("OrganizationHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children       Organization[]    @relation("OrganizationHierarchy")
+  memberships    UserMembership[]
+  assignments    FormAssignment[]
+  submissions    Submission[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([regionId, name])
+}
+
+model UserMembership {
+  id              String        @id @default(cuid())
+  userId          String
+  organizationId  String
+  role            RoleType
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([userId, organizationId, role])
+}
+
+model ReportingYear {
+  id              String               @id @default(cuid())
+  year            Int                  @unique
+  isOpenForInput  Boolean              @default(false)
+  isPublished     Boolean              @default(false)
+  templateVersions FormTemplateVersion[]
+  assignments     FormAssignment[]
+  aggregatedMetrics AggregatedMetric[]
+  metricFormulas  MetricFormulaVersion[]
+  importFiles     ImportFile[]
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+}
+
+model FormType {
+  id             String               @id @default(cuid())
+  code           String               @unique
+  name           String
+  description    String?
+  templates      FormTemplate[]
+  importFiles    ImportFile[]
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+}
+
+model FormTemplate {
+  id              String                 @id @default(cuid())
+  formTypeId      String
+  name            String
+  description     String?
+  formType        FormType               @relation(fields: [formTypeId], references: [id], onDelete: Restrict)
+  versions        FormTemplateVersion[]
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+}
+
+model FormTemplateVersion {
+  id                String            @id @default(cuid())
+  templateId        String
+  reportingYearId   String
+  version           Int
+  title             String
+  status            FormAssignmentStatus @default(DRAFT)
+  schemaJson        Json
+  template          FormTemplate      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  reportingYear     ReportingYear     @relation(fields: [reportingYearId], references: [id], onDelete: Restrict)
+  fields            FormField[]
+  assignments       FormAssignment[]
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([templateId, reportingYearId, version])
+}
+
+model FormField {
+  id                    String               @id @default(cuid())
+  templateVersionId     String
+  key                   String
+  label                 String
+  section               String?
+  fieldType             String
+  unit                  String?
+  sortOrder             Int                  @default(0)
+  isRequired            Boolean              @default(false)
+  validationJson        Json?
+  templateVersion       FormTemplateVersion  @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  values                SubmissionValue[]
+  indicatorMappings     IndicatorFieldMapping[]
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@unique([templateVersionId, key])
+}
+
+model FormAssignment {
+  id                  String                @id @default(cuid())
+  templateVersionId   String
+  reportingYearId     String
+  regionId            String
+  organizationId      String
+  status              FormAssignmentStatus  @default(DRAFT)
+  dueDate             DateTime?
+  templateVersion     FormTemplateVersion   @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+  reportingYear       ReportingYear         @relation(fields: [reportingYearId], references: [id], onDelete: Restrict)
+  region              Region                @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  organization        Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  submissions         Submission[]
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  @@unique([templateVersionId, reportingYearId, regionId, organizationId])
+}
+
+model Submission {
+  id                  String            @id @default(cuid())
+  assignmentId        String
+  submittedById       String?
+  reviewedById        String?
+  organizationId      String
+  status              SubmissionStatus  @default(DRAFT)
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  reviewComment       String?
+  assignment          FormAssignment    @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  organization        Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  submittedBy         User?             @relation("SubmissionSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  reviewedBy          User?             @relation("SubmissionReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  values              SubmissionValue[]
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+}
+
+model SubmissionValue {
+  id              String      @id @default(cuid())
+  submissionId    String
+  fieldId         String
+  valueText       String?
+  valueNumber     Decimal?    @db.Decimal(18, 4)
+  valueBoolean    Boolean?
+  valueJson       Json?
+  submission      Submission  @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  field           FormField   @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([submissionId, fieldId])
+}
+
+model IndicatorDefinition {
+  id                String                  @id @default(cuid())
+  code              String                  @unique
+  name              String
+  description       String?
+  unit              String?
+  fieldMappings     IndicatorFieldMapping[]
+  metricComponents  MetricComponent[]
+  aggregatedMetrics AggregatedMetric[]
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+}
+
+model IndicatorFieldMapping {
+  id                  String               @id @default(cuid())
+  indicatorId         String
+  fieldId             String
+  normalizationRule   Json?
+  indicator           IndicatorDefinition  @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  field               FormField            @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([indicatorId, fieldId])
+}
+
+model MetricDefinition {
+  id                String                 @id @default(cuid())
+  code              String                 @unique
+  name              String
+  description       String?
+  formulas          MetricFormulaVersion[]
+  components        MetricComponent[]
+  aggregatedMetrics AggregatedMetric[]
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+}
+
+model MetricFormulaVersion {
+  id                String            @id @default(cuid())
+  metricId          String
+  reportingYearId   String?
+  version           Int
+  formulaExpression String
+  metric            MetricDefinition  @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  reportingYear     ReportingYear?    @relation(fields: [reportingYearId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([metricId, version])
+}
+
+model MetricComponent {
+  id            String               @id @default(cuid())
+  metricId      String
+  indicatorId   String
+  weight        Decimal?             @db.Decimal(10, 4)
+  metric        MetricDefinition     @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  indicator     IndicatorDefinition  @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@unique([metricId, indicatorId])
+}
+
+model AggregatedMetric {
+  id                String               @id @default(cuid())
+  reportingYearId   String
+  regionId          String
+  metricId          String
+  indicatorId       String?
+  value             Decimal              @db.Decimal(18, 4)
+  sourceSubmissionCount Int              @default(0)
+  reportingYear     ReportingYear        @relation(fields: [reportingYearId], references: [id], onDelete: Restrict)
+  region            Region               @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  metric            MetricDefinition     @relation(fields: [metricId], references: [id], onDelete: Restrict)
+  indicator         IndicatorDefinition? @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@unique([reportingYearId, regionId, metricId, indicatorId])
+}
+
+model ImportBatch {
+  id                String             @id @default(cuid())
+  name              String
+  sourceLabel       String?
+  notes             String?
+  files             ImportFile[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model ImportFile {
+  id                String             @id @default(cuid())
+  batchId           String
+  formTypeId        String?
+  regionId          String?
+  reportingYearId   String?
+  originalName      String
+  storagePath       String
+  checksumSha256    String?
+  fileExtension     String
+  status            ImportFileStatus   @default(NEW)
+  detectedMetadata  Json?
+  extractedPayload  Json?
+  batch             ImportBatch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  formType          FormType?          @relation(fields: [formTypeId], references: [id], onDelete: SetNull)
+  region            Region?            @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  reportingYear     ReportingYear?     @relation(fields: [reportingYearId], references: [id], onDelete: SetNull)
+  fieldValues       ImportFieldValue[]
+  issues            ImportIssue[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model ImportFieldValue {
+  id                String         @id @default(cuid())
+  importFileId      String
+  rawKey            String
+  rawLabel          String?
+  normalizedKey     String?
+  valueText         String?
+  valueNumber       Decimal?       @db.Decimal(18, 4)
+  confidence        Decimal?       @db.Decimal(5, 2)
+  contextJson       Json?
+  importFile        ImportFile     @relation(fields: [importFileId], references: [id], onDelete: Cascade)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+}
+
+model ImportIssue {
+  id                String               @id @default(cuid())
+  importFileId      String
+  code              String
+  message           String
+  severity          ImportIssueSeverity
+  detailsJson       Json?
+  importFile        ImportFile           @relation(fields: [importFileId], references: [id], onDelete: Cascade)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+}
+
+model AuditLog {
+  id                String      @id @default(cuid())
+  actorUserId       String?
+  entityType        String
+  entityId          String
+  action            String
+  payload           Json?
+  createdAt         DateTime    @default(now())
+}
