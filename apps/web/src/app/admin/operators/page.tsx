@@ -1,4 +1,9 @@
-import { createOperatorAction } from "@/app/admin/actions";
+import {
+  createOperatorAction,
+  toggleOperatorActiveAction,
+  updateOperatorPasswordAction,
+  updateOperatorProfileAction,
+} from "@/app/admin/actions";
 import { RoleType } from "@/generated/prisma/client";
 import {
   getAdminScope,
@@ -84,6 +89,18 @@ export default async function AdminOperatorsPage({
   const createdRaw =
     typeof params.created === "string" ? decodeURIComponent(params.created) : null;
   const created = createdRaw ? createdRaw.split("|") : null;
+  const updatedRaw =
+    typeof params.updated === "string" ? decodeURIComponent(params.updated) : null;
+  const updated = updatedRaw ? updatedRaw.split("|") : null;
+  const passwordUpdated =
+    typeof params.passwordUpdated === "string"
+      ? decodeURIComponent(params.passwordUpdated)
+      : null;
+  const statusChangedRaw =
+    typeof params.statusChanged === "string"
+      ? decodeURIComponent(params.statusChanged)
+      : null;
+  const statusChanged = statusChangedRaw ? statusChangedRaw.split("|") : null;
   const error =
     typeof params.error === "string" ? decodeURIComponent(params.error) : null;
 
@@ -105,6 +122,27 @@ export default async function AdminOperatorsPage({
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Оператор `{created[0]}` создан для организации `{created[1]}` в
             регионе `{created[2]}`.
+          </p>
+        ) : null}
+
+        {updated ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Профиль оператора `{updated[0]}` обновлен. Текущее наименование:
+            {" "}
+            `{updated[1]}`.
+          </p>
+        ) : null}
+
+        {passwordUpdated ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Пароль оператора `{passwordUpdated}` обновлен.
+          </p>
+        ) : null}
+
+        {statusChanged ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Статус оператора `{statusChanged[0]}` изменен:{" "}
+            {statusChanged[1] === "enabled" ? "учетная запись активна" : "учетная запись отключена"}.
           </p>
         ) : null}
 
@@ -223,6 +261,7 @@ export default async function AdminOperatorsPage({
                 <th className="px-4 py-3 font-medium text-slate-600">Регион</th>
                 <th className="px-4 py-3 font-medium text-slate-600">Роль</th>
                 <th className="px-4 py-3 font-medium text-slate-600">Статус</th>
+                <th className="px-4 py-3 font-medium text-slate-600">Управление</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
@@ -259,6 +298,108 @@ export default async function AdminOperatorsPage({
                       >
                         {operator.isActive ? "Активен" : "Отключен"}
                       </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="space-y-3">
+                        <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <summary className="cursor-pointer font-medium text-slate-900">
+                            Редактировать профиль
+                          </summary>
+
+                          <form
+                            action={updateOperatorProfileAction}
+                            className="mt-4 space-y-3"
+                          >
+                            <input type="hidden" name="operatorId" value={operator.id} />
+
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium text-slate-600">
+                                ФИО
+                              </label>
+                              <input
+                                name="fullName"
+                                defaultValue={operator.fullName}
+                                required
+                                minLength={3}
+                                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium text-slate-600">
+                                Email
+                              </label>
+                              <input
+                                name="email"
+                                type="email"
+                                defaultValue={operator.email}
+                                required
+                                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium text-slate-600">
+                                Наименование
+                              </label>
+                              <input
+                                name="organizationName"
+                                defaultValue={membership?.organization.name ?? ""}
+                                required
+                                minLength={3}
+                                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400"
+                              />
+                            </div>
+
+                            <button
+                              type="submit"
+                              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                            >
+                              Сохранить профиль
+                            </button>
+                          </form>
+                        </details>
+
+                        <form
+                          action={updateOperatorPasswordAction}
+                          className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                        >
+                          <input type="hidden" name="operatorId" value={operator.id} />
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium text-slate-600">
+                              Новый пароль
+                            </label>
+                            <input
+                              name="password"
+                              type="password"
+                              required
+                              minLength={8}
+                              placeholder="Минимум 8 символов"
+                              className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400"
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            className="mt-3 rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-white"
+                          >
+                            Обновить пароль
+                          </button>
+                        </form>
+
+                        <form action={toggleOperatorActiveAction}>
+                          <input type="hidden" name="operatorId" value={operator.id} />
+                          <button
+                            type="submit"
+                            className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
+                              operator.isActive
+                                ? "bg-red-50 text-red-700 hover:bg-red-100"
+                                : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                            }`}
+                          >
+                            {operator.isActive ? "Отключить оператора" : "Включить оператора"}
+                          </button>
+                        </form>
+                      </div>
                     </td>
                   </tr>
                 );
