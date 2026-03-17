@@ -1,5 +1,4 @@
-import Link from "next/link";
-
+import { NavLink } from "@/app/admin/nav-link";
 import { SignOutForm } from "@/app/admin/sign-out-form";
 import { hasRole, requireAdminUser } from "@/lib/access";
 import { RoleType } from "@/generated/prisma/client";
@@ -37,33 +36,13 @@ export default async function AdminLayout({
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[240px_1fr]">
         <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <nav className="space-y-2">
-            <Link
-              href="/admin"
-              className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
-            >
-              Обзор
-            </Link>
-            <Link
-              href="/admin/forms"
-              className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
-            >
-              Формы
-            </Link>
+            <NavLink href="/admin">Обзор</NavLink>
+            <NavLink href="/admin/forms">Формы</NavLink>
             {isSuperadmin || isRegionAdmin ? (
-              <Link
-                href="/admin/operators"
-                className="block rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-900"
-              >
-                Операторы
-              </Link>
+              <NavLink href="/admin/operators">Операторы</NavLink>
             ) : null}
             {isSuperadmin ? (
-              <Link
-                href="/admin/users"
-                className="block rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white"
-              >
-                Пользователи
-              </Link>
+              <NavLink href="/admin/users">Пользователи</NavLink>
             ) : null}
           </nav>
         </aside>
