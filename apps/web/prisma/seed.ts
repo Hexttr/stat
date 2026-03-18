@@ -127,6 +127,7 @@ const formTypes = [
   { code: "F14", name: "Форма F14", description: "Базовая историческая форма из архива 2024 года." },
   { code: "F19", name: "Форма F19", description: "Базовая историческая форма из архива 2024 года." },
   { code: "F30", name: "Форма F30", description: "Базовая историческая форма из архива 2024 года." },
+  { code: "F47", name: "Форма F47", description: "Базовая историческая форма из архива 2024 года." },
 ];
 
 const seededTemplateFields: Record<
@@ -152,6 +153,11 @@ const seededTemplateFields: Record<
     { key: "medical_units", label: "Количество подразделений", fieldType: "number", unit: "шт.", isRequired: true },
     { key: "specialists_total", label: "Количество специалистов", fieldType: "number", unit: "чел." },
     { key: "equipment_units", label: "Количество единиц оборудования", fieldType: "number", unit: "шт." },
+  ],
+  F47: [
+    { key: "indicator_1", label: "Показатель 1", fieldType: "number", isRequired: false },
+    { key: "indicator_2", label: "Показатель 2", fieldType: "number", isRequired: false },
+    { key: "indicator_3", label: "Показатель 3", fieldType: "number", isRequired: false },
   ],
 };
 
@@ -236,7 +242,10 @@ async function seedFormTemplates() {
       },
     });
 
-    const fields = seededTemplateFields[formType.code] ?? [];
+    const fields = seededTemplateFields[formType.code] ?? [
+      { key: "indicator_1", label: "Показатель 1", fieldType: "number", isRequired: false },
+      { key: "indicator_2", label: "Показатель 2", fieldType: "number", isRequired: false },
+    ];
 
     for (const reportingYear of years) {
       const schemaJson: FormBuilderSchema = {

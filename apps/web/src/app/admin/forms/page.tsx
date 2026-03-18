@@ -3,6 +3,7 @@ import Link from "next/link";
 import {
   createFormAssignmentAction,
   createFormAssignmentForAllRegionsAction,
+  createFormTypeAction,
   createFormTemplateAction,
   createFormVersionAction,
   importLegacyFormVersionAction,
@@ -17,6 +18,10 @@ import {
   RoleType,
 } from "@/generated/prisma/client";
 import { getAdminScope, hasRole, requireAdminUser } from "@/lib/access";
+import {
+  getLegacyFolderSummary,
+  legacyFormCodes,
+} from "@/lib/form-builder/legacy-import";
 import { prisma } from "@/lib/prisma";
 
 function formatAssignmentStatus(status: FormAssignmentStatus) {
@@ -74,6 +79,7 @@ export default async function AdminFormsPage({
     regions,
     assignments,
     operators,
+    legacySummaries,
     resolvedSearchParams,
   ] = await Promise.all([
     prisma.formType.findMany({
@@ -157,6 +163,7 @@ export default async function AdminFormsPage({
       },
       orderBy: { fullName: "asc" },
     }),
+    Promise.all(legacyFormCodes.map((code) => getLegacyFolderSummary(code))),
     searchParams ??
       Promise.resolve({} as Record<string, string | string[] | undefined>),
   ]);
@@ -169,6 +176,11 @@ export default async function AdminFormsPage({
     typeof params.templateCreated === "string"
       ? decodeURIComponent(params.templateCreated)
       : null;
+  const formTypeCreatedRaw =
+    typeof params.formTypeCreated === "string"
+      ? decodeURIComponent(params.formTypeCreated)
+      : null;
+  const formTypeCreated = formTypeCreatedRaw ? formTypeCreatedRaw.split("|") : null;
   const bulkCreatedRaw =
     typeof params.bulkCreated === "string"
       ? decodeURIComponent(params.bulkCreated)
@@ -208,6 +220,12 @@ export default async function AdminFormsPage({
           </p>
         ) : null}
 
+        {formTypeCreated ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Тип формы `{formTypeCreated[0]}` — `{formTypeCreated[1]}` успешно создан.
+          </p>
+        ) : null}
+
         {error ? (
           <p className="mt-6 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
@@ -215,7 +233,96 @@ export default async function AdminFormsPage({
         ) : null}
 
         {isSuperadmin ? (
-          <div className="mt-8 grid gap-6 xl:grid-cols-2">
+          <div className="mt-8 space-y-6">
+            <div className="grid gap-4 xl:grid-cols-4">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 1</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-950">Тип формы</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Если появилась новая форма с новым кодом, сначала создайте новый тип.
+                </p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 2</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-950">Шаблон</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Для каждого типа можно завести один или несколько шаблонов.
+                </p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 3</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-950">Версия на год</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Создайте draft-версию на новый отчетный год и откройте preview.
+                </p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 4</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-950">Импорт из `.doc`</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Используйте как черновой старт, если форма уже есть в архиве.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-2">
+              <form
+                action={createFormTypeAction}
+                className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
+              >
+                <div className="space-y-2">
+                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
+                    Новый тип формы
+                  </p>
+                  <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeCode">
+                    Код формы
+                  </label>
+                  <input
+                    id="newFormTypeCode"
+                    name="code"
+                    placeholder="Например, F61"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeName">
+                    Название формы
+                  </label>
+                  <input
+                    id="newFormTypeName"
+                    name="name"
+                    placeholder="Форма F61"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label
+                    className="text-sm font-medium text-slate-700"
+                    htmlFor="newFormTypeDescription"
+                  >
+                    Описание
+                  </label>
+                  <textarea
+                    id="newFormTypeDescription"
+                    name="description"
+                    rows={3}
+                    placeholder="Что это за форма и для чего она нужна"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <button
+                    type="submit"
+                    className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                  >
+                    Создать тип формы
+                  </button>
+                </div>
+              </form>
+
             <form
               action={createFormTemplateAction}
               className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
@@ -340,10 +447,11 @@ export default async function AdminFormsPage({
                 </button>
               </div>
             </form>
+            </div>
 
             <form
               action={importLegacyFormVersionAction}
-              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6 xl:col-span-2"
+              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
             >
               <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                 <div>
@@ -351,15 +459,37 @@ export default async function AdminFormsPage({
                     Импорт структуры из архива 2024
                   </p>
                   <h3 className="mt-2 text-lg font-semibold text-slate-950">
-                    Реальные формы `F12`, `F14`, `F19`, `F30`
+                    Реальные формы {legacyFormCodes.map((code) => `\`${code}\``).join(", ")}
                   </h3>
                   <p className="mt-2 max-w-3xl text-sm text-slate-600">
                     Создает черновую draft-версию из реальных `.doc` файлов в локальной
-                    папке `forms/2024_F12|F14|F19|F30`. Это bootstrap-инструмент для
-                    старта структуры: после импорта откройте grid-редактор, проверьте
-                    строки, графы и служебные колонки, затем сохраните и публикуйте.
+                    папке `forms/`. Это bootstrap-инструмент для старта структуры:
+                    после импорта откройте preview, проверьте строки, графы и служебные
+                    колонки, затем сохраните и публикуйте.
                   </p>
                 </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-5">
+                {legacySummaries.map((summary) => (
+                  <div
+                    key={summary.formCode}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm"
+                  >
+                    <p className="font-semibold text-slate-950">{summary.formCode}</p>
+                    <p className="mt-2 text-slate-600">Файлов в архиве: {summary.fileCount}</p>
+                    <p className="mt-1 text-slate-600">Таблиц в sample: {summary.tableCount}</p>
+                    <p className="mt-1 text-slate-600">Строк в sample: {summary.totalRows}</p>
+                    <p className="mt-2 break-all text-xs text-slate-500">
+                      Выбранный sample: {summary.sampleFileName ?? "нет"}
+                    </p>
+                    {summary.fallbackUsed ? (
+                      <p className="mt-2 text-xs font-medium text-amber-700">
+                        Сейчас sample распознается с fallback, нужен ручной контроль.
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
               </div>
 
               <div className="grid gap-4 lg:grid-cols-3">
@@ -373,11 +503,16 @@ export default async function AdminFormsPage({
                   <select
                     id="legacyImportFormTypeId"
                     name="formTypeId"
-                    defaultValue={formTypes.find((type) => ["F12", "F14", "F19", "F30"].includes(type.code))?.id}
+                    defaultValue={
+                      formTypes.find((type) => legacyFormCodes.includes(type.code as (typeof legacyFormCodes)[number]))
+                        ?.id
+                    }
                     className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
                   >
                     {formTypes
-                      .filter((type) => ["F12", "F14", "F19", "F30"].includes(type.code))
+                      .filter((type) =>
+                        legacyFormCodes.includes(type.code as (typeof legacyFormCodes)[number]),
+                      )
                       .map((formType) => (
                         <option key={formType.id} value={formType.id}>
                           {formType.code} — {formType.name}

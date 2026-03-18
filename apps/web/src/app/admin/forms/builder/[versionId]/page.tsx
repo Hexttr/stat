@@ -48,6 +48,15 @@ export default async function FormBuilderPage({
     typeof resolvedSearchParams.error === "string"
       ? decodeURIComponent(resolvedSearchParams.error)
       : null;
+  const importedRaw =
+    typeof resolvedSearchParams.imported === "string"
+      ? decodeURIComponent(resolvedSearchParams.imported)
+      : null;
+  const imported = importedRaw ? importedRaw.split("|") : null;
+  const warning =
+    typeof resolvedSearchParams.warning === "string"
+      ? decodeURIComponent(resolvedSearchParams.warning)
+      : null;
 
   return (
     <FormBuilderWorkspace
@@ -62,6 +71,12 @@ export default async function FormBuilderPage({
       saved={saved}
       published={published}
       error={error}
+      importNotice={
+        imported
+          ? `Импорт выполнен по файлу ${imported[0]}. Найдено таблиц: ${imported[1]}, строк: ${imported[2]}, файлов в архиве: ${imported[3]}.`
+          : null
+      }
+      warning={warning}
       publishedMeta={
         version.publishedAt
           ? {

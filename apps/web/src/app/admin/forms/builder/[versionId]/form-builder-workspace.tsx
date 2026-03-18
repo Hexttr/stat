@@ -54,6 +54,8 @@ type Props = {
   saved: boolean;
   published: boolean;
   error: string | null;
+  importNotice: string | null;
+  warning: string | null;
   publishedMeta: {
     fullName: string;
     publishedAtLabel: string;
@@ -134,6 +136,8 @@ export function FormBuilderWorkspace({
   saved,
   published,
   error,
+  importNotice,
+  warning,
   publishedMeta,
   saveAction,
   publishAction,
@@ -964,6 +968,18 @@ export function FormBuilderWorkspace({
         {error ? (
           <p className="mt-6 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
+          </p>
+        ) : null}
+
+        {importNotice ? (
+          <p className="mt-6 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
+            {importNotice}
+          </p>
+        ) : null}
+
+        {warning ? (
+          <p className="mt-6 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {warning}
           </p>
         ) : null}
 

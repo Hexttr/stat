@@ -22,7 +22,10 @@ import {
   formBuilderSchema,
   parseAndNormalizeFormSchema,
 } from "@/lib/form-builder/schema";
-import { importLegacyFormSchema } from "@/lib/form-builder/legacy-import";
+import {
+  importLegacyFormBundle,
+  isLegacyFormCode,
+} from "@/lib/form-builder/legacy-import";
 import { projectSchemaToFields } from "@/lib/form-builder/projection";
 import { prisma } from "@/lib/prisma";
 
@@ -67,6 +70,17 @@ const createFormAssignmentSchema = z.object({
 const createFormTemplateSchema = z.object({
   formTypeId: z.string().min(1, "Выберите тип формы."),
   name: z.string().trim().min(3, "Укажите название шаблона."),
+  description: z.string().trim().optional(),
+});
+
+const createFormTypeSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(2, "Укажите код формы.")
+    .max(20, "Код формы слишком длинный.")
+    .transform((value) => value.toUpperCase()),
+  name: z.string().trim().min(3, "Укажите название формы."),
   description: z.string().trim().optional(),
 });
 
@@ -741,6 +755,49 @@ export async function createFormTemplateAction(formData: FormData) {
   redirect(`/admin/forms?templateCreated=${encodeURIComponent(template.name)}`);
 }
 
+export async function createFormTypeAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = createFormTypeSchema.safeParse({
+    code: formData.get("code"),
+    name: formData.get("name"),
+    description: formData.get("description"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось создать тип формы.",
+      )}`,
+    );
+  }
+
+  const existingFormType = await prisma.formType.findFirst({
+    where: {
+      code: parsed.data.code,
+    },
+  });
+
+  if (existingFormType) {
+    redirect("/admin/forms?error=Тип формы с таким кодом уже существует.");
+  }
+
+  const formType = await prisma.formType.create({
+    data: {
+      code: parsed.data.code,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+    },
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(
+    `/admin/forms?formTypeCreated=${encodeURIComponent(
+      `${formType.code}|${formType.name}`,
+    )}`,
+  );
+}
+
 export async function createFormVersionAction(formData: FormData) {
   await requireSuperadmin();
 
@@ -837,7 +894,7 @@ export async function importLegacyFormVersionAction(formData: FormData) {
     redirect("/admin/forms?error=Не удалось определить тип формы или отчетный год.");
   }
 
-  if (!["F12", "F14", "F19", "F30"].includes(formType.code)) {
+  if (!isLegacyFormCode(formType.code)) {
     redirect("/admin/forms?error=Для этого типа формы еще не настроен импорт из архива 2024.");
   }
 
@@ -867,11 +924,12 @@ export async function importLegacyFormVersionAction(formData: FormData) {
   });
 
   const nextVersionNumber = (latestVersion?.version ?? 0) + 1;
-  const schema = await importLegacyFormSchema({
-    formCode: formType.code as "F12" | "F14" | "F19" | "F30",
+  const importResult = await importLegacyFormBundle({
+    formCode: formType.code,
     reportingYear: reportingYear.year,
     title: parsed.data.title,
   });
+  const { schema, diagnostics } = importResult;
 
   const version = await prisma.formTemplateVersion.create({
     data: {
@@ -890,7 +948,23 @@ export async function importLegacyFormVersionAction(formData: FormData) {
   });
 
   revalidatePath("/admin/forms");
-  redirect(`/admin/forms/builder/${version.id}`);
+  const importedPayload = encodeURIComponent(
+    [
+      diagnostics.selectedFileName,
+      String(diagnostics.tableCount),
+      String(diagnostics.totalRows),
+      String(diagnostics.fileCount),
+    ].join("|"),
+  );
+  const warningPayload =
+    diagnostics.fallbackUsed || diagnostics.warnings.length > 0
+      ? `&warning=${encodeURIComponent(
+          diagnostics.warnings[0] ??
+            "Импорт выполнен с fallback-структурой. Проверьте форму особенно внимательно.",
+        )}`
+      : "";
+
+  redirect(`/admin/forms/builder/${version.id}?imported=${importedPayload}${warningPayload}`);
 }
 
 export async function duplicateFormVersionAction(formData: FormData) {
