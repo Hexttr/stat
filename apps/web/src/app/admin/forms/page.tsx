@@ -6,7 +6,6 @@ import {
   createFormTypeAction,
   createFormTemplateAction,
   createFormVersionAction,
-  importLegacyFormVersionAction,
   createOperatorFormAssignmentAction,
   createOperatorFormAssignmentsForAllAction,
   duplicateFormVersionAction,
@@ -16,9 +15,9 @@ import {
   FormTemplateVersionStatus,
   OrganizationType,
   RoleType,
+  SubmissionStatus,
 } from "@/generated/prisma/client";
 import { getAdminScope, hasRole, requireAdminUser } from "@/lib/access";
-import { legacyFormCodes } from "@/lib/form-builder/legacy-import";
 import { prisma } from "@/lib/prisma";
 
 function formatAssignmentStatus(status: FormAssignmentStatus) {
@@ -44,6 +43,96 @@ function formatVersionStatus(status: FormTemplateVersionStatus) {
       return "В архиве";
     default:
       return status;
+  }
+}
+
+function formatSubmissionStatus(status: SubmissionStatus | null) {
+  switch (status) {
+    case SubmissionStatus.DRAFT:
+      return "В работе";
+    case SubmissionStatus.SUBMITTED:
+      return "Отправлено";
+    case SubmissionStatus.IN_REVIEW:
+      return "На проверке";
+    case SubmissionStatus.CHANGES_REQUESTED:
+      return "Нужны правки";
+    case SubmissionStatus.APPROVED_BY_REGION:
+      return "Принято регионом";
+    case SubmissionStatus.APPROVED_BY_SUPERADMIN:
+      return "Принято";
+    case SubmissionStatus.REJECTED:
+      return "Отклонено";
+    default:
+      return "Не начато";
+  }
+}
+
+function getVersionStatusClasses(status: FormTemplateVersionStatus) {
+  switch (status) {
+    case FormTemplateVersionStatus.PUBLISHED:
+      return "bg-emerald-50 text-emerald-700";
+    case FormTemplateVersionStatus.ARCHIVED:
+      return "bg-slate-100 text-slate-500";
+    default:
+      return "bg-amber-50 text-amber-700";
+  }
+}
+
+function getRouteStatusClasses(status: SubmissionStatus | null) {
+  switch (status) {
+    case SubmissionStatus.APPROVED_BY_REGION:
+    case SubmissionStatus.APPROVED_BY_SUPERADMIN:
+      return "bg-emerald-50 text-emerald-700";
+    case SubmissionStatus.SUBMITTED:
+    case SubmissionStatus.IN_REVIEW:
+      return "bg-blue-50 text-blue-700";
+    case SubmissionStatus.CHANGES_REQUESTED:
+      return "bg-amber-50 text-amber-700";
+    case SubmissionStatus.REJECTED:
+      return "bg-rose-50 text-rose-700";
+    case SubmissionStatus.DRAFT:
+      return "bg-slate-100 text-slate-700";
+    default:
+      return "bg-slate-100 text-slate-700";
+  }
+}
+
+type RouteGroupKey = "assigned" | "review" | "accepted";
+
+function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
+  switch (status) {
+    case SubmissionStatus.SUBMITTED:
+    case SubmissionStatus.IN_REVIEW:
+    case SubmissionStatus.CHANGES_REQUESTED:
+    case SubmissionStatus.REJECTED:
+      return "review";
+    case SubmissionStatus.APPROVED_BY_REGION:
+    case SubmissionStatus.APPROVED_BY_SUPERADMIN:
+      return "accepted";
+    case SubmissionStatus.DRAFT:
+    default:
+      return "assigned";
+  }
+}
+
+function getRouteGroupMeta(group: RouteGroupKey) {
+  switch (group) {
+    case "review":
+      return {
+        title: "На проверке",
+        description: "Отправленные формы и сценарии, требующие реакции.",
+      };
+    case "accepted":
+      return {
+        title: "Принято",
+        description: "Маршруты, завершившие согласование на текущем уровне.",
+      };
+    case "assigned":
+    default:
+      return {
+        title: "Назначено",
+        description: "Новые и еще не завершенные маршруты по регионам и операторам.",
+      };
   }
 }
 
@@ -129,6 +218,12 @@ export default async function AdminFormsPage({
         },
         region: true,
         organization: true,
+        submissions: {
+          orderBy: {
+            updatedAt: "desc",
+          },
+          take: 1,
+        },
       },
       orderBy: [{ createdAt: "desc" }],
     }),
@@ -188,6 +283,10 @@ export default async function AdminFormsPage({
   const operatorCreated = operatorCreatedRaw ? operatorCreatedRaw.split("|") : null;
   const error =
     typeof params.error === "string" ? decodeURIComponent(params.error) : null;
+  const selectedCreateTab =
+    typeof params.tab === "string" && ["template", "type", "version"].includes(params.tab)
+      ? params.tab
+      : "template";
 
   const publishedVersions = templateVersions.filter(
     (version) => version.versionStatus === FormTemplateVersionStatus.PUBLISHED,
@@ -204,10 +303,54 @@ export default async function AdminFormsPage({
     { label: "Версий", value: templateVersions.length },
     { label: "Назначений", value: assignments.length },
   ];
-  const supportedLegacyForms = legacyFormCodes.map((code) => ({
-    code,
-    configured: formTypes.some((formType) => formType.code === code),
-  }));
+  const templatesByFormType = formTypes
+    .map((formType) => ({
+      formType,
+      templates: templates.filter((template) => template.formTypeId === formType.id),
+    }))
+    .filter((group) => group.templates.length > 0);
+  const selectedCatalogTypeCode =
+    typeof params.catalog === "string" &&
+    templatesByFormType.some((group) => group.formType.code === params.catalog)
+      ? params.catalog
+      : templatesByFormType[0]?.formType.code;
+  const activeCatalogGroup =
+    templatesByFormType.find((group) => group.formType.code === selectedCatalogTypeCode) ??
+    templatesByFormType[0] ??
+    null;
+  const routeItems = assignments.map((assignment) => {
+    const submission = assignment.submissions[0] ?? null;
+    const routeGroup = getRouteGroupKey(submission?.status ?? null);
+    const direction =
+      assignment.organization.type === OrganizationType.REGION_CENTER
+        ? "Федеральный центр -> Регион"
+        : "Регион -> Оператор";
+
+    return {
+      assignment,
+      submission,
+      routeGroup,
+      direction,
+      statusLabel: submission
+        ? formatSubmissionStatus(submission.status)
+        : formatAssignmentStatus(assignment.status),
+    };
+  });
+  const routeGroups: Array<{
+    key: RouteGroupKey;
+    title: string;
+    description: string;
+    items: typeof routeItems;
+  }> = (["assigned", "review", "accepted"] as const).map((groupKey) => {
+    const meta = getRouteGroupMeta(groupKey);
+
+    return {
+      key: groupKey,
+      title: meta.title,
+      description: meta.description,
+      items: routeItems.filter((route) => route.routeGroup === groupKey),
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -220,11 +363,6 @@ export default async function AdminFormsPage({
             <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
               Каталог форм
             </h1>
-            <p className="mt-3 max-w-3xl text-base leading-7 text-slate-600">
-              Здесь собраны типы форм, шаблоны, версии по годам и назначения по
-              оргструктуре. Экран упрощен для быстрого открытия и презентации:
-              редактор, публикация и распределение остаются доступными.
-            </p>
           </div>
           <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
             {isSuperadmin ? "Режим суперадмина" : "Режим регионального администратора"}
@@ -253,10 +391,10 @@ export default async function AdminFormsPage({
           {summaryMetrics.map((metric) => (
             <article
               key={metric.label}
-              className="rounded-3xl border border-slate-200 bg-slate-50 p-5"
+              className="rounded-3xl border border-[#2e78be] bg-[#1f67ab] p-5 text-white"
             >
-              <p className="text-sm text-slate-500">{metric.label}</p>
-              <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+              <p className="text-sm text-blue-100">{metric.label}</p>
+              <p className="mt-3 text-3xl font-semibold tracking-tight text-white">
                 {metric.value}
               </p>
             </article>
@@ -265,342 +403,210 @@ export default async function AdminFormsPage({
 
         {isSuperadmin ? (
           <div className="mt-8 space-y-6">
-            <div className="grid gap-4 xl:grid-cols-4">
-              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 1</p>
-                <h3 className="mt-2 text-lg font-semibold text-slate-950">Тип формы</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  Если появилась новая форма с новым кодом, сначала создайте новый тип.
-                </p>
-              </div>
-              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 2</p>
-                <h3 className="mt-2 text-lg font-semibold text-slate-950">Шаблон</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  Для каждого типа можно завести один или несколько шаблонов.
-                </p>
-              </div>
-              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 3</p>
-                <h3 className="mt-2 text-lg font-semibold text-slate-950">Версия на год</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  Создайте draft-версию на новый отчетный год и откройте preview.
-                </p>
-              </div>
-              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Шаг 4</p>
-                <h3 className="mt-2 text-lg font-semibold text-slate-950">Импорт из `.doc`</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  Используйте как черновой старт, если форма уже есть в архиве.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-2">
-              <form
-                action={createFormTypeAction}
-                className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
+            <div className="flex flex-wrap gap-3">
+              <Link
+                href="/admin/forms?tab=template"
+                className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
+                  selectedCreateTab === "template"
+                    ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
               >
-                <div className="space-y-2">
-                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                    Новый тип формы
-                  </p>
-                  <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeCode">
-                    Код формы
-                  </label>
-                  <input
-                    id="newFormTypeCode"
-                    name="code"
-                    placeholder="Например, F61"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeName">
-                    Название формы
-                  </label>
-                  <input
-                    id="newFormTypeName"
-                    name="name"
-                    placeholder="Форма F61"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium text-slate-700"
-                    htmlFor="newFormTypeDescription"
-                  >
-                    Описание
-                  </label>
-                  <textarea
-                    id="newFormTypeDescription"
-                    name="description"
-                    rows={3}
-                    placeholder="Что это за форма и для чего она нужна"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                  />
-                </div>
-
-                <div>
-                  <button
-                    type="submit"
-                    className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
-                  >
-                    Создать тип формы
-                  </button>
-                </div>
-              </form>
-
-            <form
-              action={createFormTemplateAction}
-              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
-            >
-              <div className="space-y-2">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                  Новый шаблон
-                </p>
-                <label className="text-sm font-medium text-slate-700" htmlFor="formTypeId">
-                  Тип формы
-                </label>
-                <select
-                  id="formTypeId"
-                  name="formTypeId"
-                  defaultValue={formTypes[0]?.id}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                >
-                  {formTypes.map((formType) => (
-                    <option key={formType.id} value={formType.id}>
-                      {formType.code} — {formType.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="templateName">
-                  Название шаблона
-                </label>
-                <input
-                  id="templateName"
-                  name="name"
-                  placeholder="Форма F12 — хирургический профиль"
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="templateDescription">
-                  Описание
-                </label>
-                <textarea
-                  id="templateDescription"
-                  name="description"
-                  rows={3}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                  placeholder="Краткое описание назначения шаблона"
-                />
-              </div>
-
-              <div>
-                <button
-                  type="submit"
-                  className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
-                >
-                  Создать шаблон
-                </button>
-              </div>
-            </form>
-
-            <form
-              action={createFormVersionAction}
-              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
-            >
-              <div className="space-y-2">
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                  Новая версия
-                </p>
-                <label className="text-sm font-medium text-slate-700" htmlFor="templateId">
-                  Шаблон
-                </label>
-                <select
-                  id="templateId"
-                  name="templateId"
-                  defaultValue={templates[0]?.id}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                >
-                  {templates.map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.formType.code} — {template.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="reportingYearId">
-                  Отчетный год
-                </label>
-                <select
-                  id="reportingYearId"
-                  name="reportingYearId"
-                  defaultValue={reportingYears[0]?.id}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                >
-                  {reportingYears.map((reportingYear) => (
-                    <option key={reportingYear.id} value={reportingYear.id}>
-                      {reportingYear.year}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="versionTitle">
-                  Название версии
-                </label>
-                <input
-                  id="versionTitle"
-                  name="title"
-                  placeholder="Форма F12 за 2026"
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
-                />
-              </div>
-
-              <div>
-                <button
-                  type="submit"
-                  className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
-                >
-                  Создать draft-версию
-                </button>
-              </div>
-            </form>
+                Новый шаблон
+              </Link>
+              <Link
+                href="/admin/forms?tab=type"
+                className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
+                  selectedCreateTab === "type"
+                    ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                Новый тип формы
+              </Link>
+              <Link
+                href="/admin/forms?tab=version"
+                className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
+                  selectedCreateTab === "version"
+                    ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                Новая версия формы
+              </Link>
             </div>
 
-            <form
-              action={importLegacyFormVersionAction}
-              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6"
-            >
-              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                    Импорт структуры из архива 2024
-                  </p>
-                  <h3 className="mt-2 text-lg font-semibold text-slate-950">
-                    Реальные формы {legacyFormCodes.map((code) => `\`${code}\``).join(", ")}
-                  </h3>
-                  <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                    Создает черновую draft-версию из реальных `.doc` файлов в локальной
-                    папке `forms/`. Детальный анализ архива убран с этой страницы, чтобы
-                    раздел открывался быстрее. Сам импорт и дальнейшая ручная доводка в
-                    preview-редакторе работают как раньше.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-5">
-                {supportedLegacyForms.map((form) => (
-                  <div
-                    key={form.code}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm"
-                  >
-                    <p className="font-semibold text-slate-950">{form.code}</p>
-                    <p className="mt-2 text-slate-600">
-                      {form.configured
-                        ? "Форма подключена и доступна для создания черновика."
-                        : "Тип формы пока не создан в каталоге."}
-                    </p>
-                    <span
-                      className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-medium ${
-                        form.configured
-                          ? "bg-emerald-50 text-emerald-700"
-                          : "bg-amber-50 text-amber-700"
-                      }`}
-                    >
-                      {form.configured ? "Готово к bootstrap" : "Нужно добавить тип"}
-                    </span>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6">
+              {selectedCreateTab === "type" ? (
+                <form action={createFormTypeAction} className="grid gap-4 lg:max-w-2xl">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeCode">
+                      Код формы
+                    </label>
+                    <input
+                      id="newFormTypeCode"
+                      name="code"
+                      placeholder="Например, F61"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                    />
                   </div>
-                ))}
-              </div>
 
-              <div className="grid gap-4 lg:grid-cols-3">
-                <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium text-slate-700"
-                    htmlFor="legacyImportFormTypeId"
-                  >
-                    Тип формы
-                  </label>
-                  <select
-                    id="legacyImportFormTypeId"
-                    name="formTypeId"
-                    defaultValue={
-                      formTypes.find((type) => legacyFormCodes.includes(type.code as (typeof legacyFormCodes)[number]))
-                        ?.id
-                    }
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                  >
-                    {formTypes
-                      .filter((type) =>
-                        legacyFormCodes.includes(type.code as (typeof legacyFormCodes)[number]),
-                      )
-                      .map((formType) => (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="newFormTypeName">
+                      Название формы
+                    </label>
+                    <input
+                      id="newFormTypeName"
+                      name="name"
+                      placeholder="Форма F61"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label
+                      className="text-sm font-medium text-slate-700"
+                      htmlFor="newFormTypeDescription"
+                    >
+                      Описание
+                    </label>
+                    <textarea
+                      id="newFormTypeDescription"
+                      name="description"
+                      rows={3}
+                      placeholder="Что это за форма и для чего она нужна"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div>
+                    <button
+                      type="submit"
+                      className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                    >
+                      Создать тип формы
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
+              {selectedCreateTab === "template" ? (
+                <form action={createFormTemplateAction} className="grid gap-4 lg:max-w-2xl">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="formTypeId">
+                      Тип формы
+                    </label>
+                    <select
+                      id="formTypeId"
+                      name="formTypeId"
+                      defaultValue={formTypes[0]?.id}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                    >
+                      {formTypes.map((formType) => (
                         <option key={formType.id} value={formType.id}>
                           {formType.code} — {formType.name}
                         </option>
                       ))}
-                  </select>
-                </div>
+                    </select>
+                  </div>
 
-                <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium text-slate-700"
-                    htmlFor="legacyImportReportingYearId"
-                  >
-                    Отчетный год
-                  </label>
-                  <select
-                    id="legacyImportReportingYearId"
-                    name="reportingYearId"
-                    defaultValue={reportingYears.find((year) => year.year === 2024)?.id ?? reportingYears[0]?.id}
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                  >
-                    {reportingYears.map((reportingYear) => (
-                      <option key={reportingYear.id} value={reportingYear.id}>
-                        {reportingYear.year}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="templateName">
+                      Название шаблона
+                    </label>
+                    <input
+                      id="templateName"
+                      name="name"
+                      placeholder="Форма F12 — хирургический профиль"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                    />
+                  </div>
 
-                <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium text-slate-700"
-                    htmlFor="legacyImportTitle"
-                  >
-                    Название версии
-                  </label>
-                  <input
-                    id="legacyImportTitle"
-                    name="title"
-                    defaultValue="Архивная структура 2024"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                  />
-                </div>
-              </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="templateDescription">
+                      Описание
+                    </label>
+                    <textarea
+                      id="templateDescription"
+                      name="description"
+                      rows={3}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                      placeholder="Краткое описание назначения шаблона"
+                    />
+                  </div>
 
-              <div>
-                <button
-                  type="submit"
-                  className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
-                >
-                  Создать черновик из `.doc`
-                </button>
-              </div>
-            </form>
+                  <div>
+                    <button
+                      type="submit"
+                      className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                    >
+                      Создать шаблон
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
+              {selectedCreateTab === "version" ? (
+                <form action={createFormVersionAction} className="grid gap-4 lg:max-w-2xl">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="templateId">
+                      Шаблон
+                    </label>
+                    <select
+                      id="templateId"
+                      name="templateId"
+                      defaultValue={templates[0]?.id}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                    >
+                      {templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.formType.code} — {template.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="reportingYearId">
+                      Отчетный год
+                    </label>
+                    <select
+                      id="reportingYearId"
+                      name="reportingYearId"
+                      defaultValue={reportingYears[0]?.id}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                    >
+                      {reportingYears.map((reportingYear) => (
+                        <option key={reportingYear.id} value={reportingYear.id}>
+                          {reportingYear.year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="versionTitle">
+                      Название версии
+                    </label>
+                    <input
+                      id="versionTitle"
+                      name="title"
+                      placeholder="Форма F12 за 2026"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div>
+                    <button
+                      type="submit"
+                      className="rounded-2xl bg-[#1f67ab] px-5 py-3 font-medium text-white transition hover:bg-[#185993]"
+                    >
+                      Создать draft-версию
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+            </div>
           </div>
         ) : (
           <p className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -611,111 +617,160 @@ export default async function AdminFormsPage({
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h2 className="text-2xl font-semibold text-slate-950">Шаблоны и версии</h2>
-        <div className="mt-6 space-y-6">
-          {templates.map((template) => (
-            <article
-              key={template.id}
-              className="rounded-3xl border border-slate-200 bg-slate-50 p-6"
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-950">Шаблоны и версии</h2>
+            <p className="mt-2 max-w-3xl text-slate-600">
+              Каталог сгруппирован по типам форм. Внутри каждого типа показаны шаблоны и компактный список версий по годам.
+            </p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            Типов с шаблонами: {templatesByFormType.length}
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          {templatesByFormType.map(({ formType }) => (
+            <Link
+              key={formType.id}
+              href={`/admin/forms?tab=${selectedCreateTab}&catalog=${formType.code}`}
+              className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
+                selectedCatalogTypeCode === formType.code
+                  ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
             >
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
-                    {template.formType.code}
-                  </p>
-                  <h3 className="mt-2 text-xl font-semibold text-slate-950">
-                    {template.name}
-                  </h3>
-                  <p className="mt-2 text-slate-600">
-                    {template.description || "Без описания"}
-                  </p>
-                </div>
-
-                {isSuperadmin && template.versions.length > 0 ? (
-                  <form
-                    action={duplicateFormVersionAction}
-                    className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:min-w-[320px]"
-                  >
-                    <input
-                      type="hidden"
-                      name="sourceVersionId"
-                      value={template.versions[0]?.id}
-                    />
-                    <div className="space-y-2">
-                      <label
-                        className="text-sm font-medium text-slate-700"
-                        htmlFor={`duplicate-year-${template.id}`}
-                      >
-                        Скопировать последнюю версию в год
-                      </label>
-                      <select
-                        id={`duplicate-year-${template.id}`}
-                        name="reportingYearId"
-                        defaultValue={reportingYears[0]?.id}
-                        className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                      >
-                        {reportingYears.map((reportingYear) => (
-                          <option key={reportingYear.id} value={reportingYear.id}>
-                            {reportingYear.year}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <input
-                      name="title"
-                      defaultValue={`${template.name} — новая версия`}
-                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                    />
-                    <button
-                      type="submit"
-                      className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-                    >
-                      Дублировать в новый draft
-                    </button>
-                  </form>
-                ) : null}
-              </div>
-
-              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {template.versions.map((version) => (
-                  <article
-                    key={version.id}
-                    className="rounded-2xl border border-slate-200 bg-white p-5"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="font-medium text-slate-950">{version.title}</p>
-                      <span
-                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
-                          version.versionStatus === FormTemplateVersionStatus.PUBLISHED
-                            ? "bg-emerald-50 text-emerald-700"
-                            : version.versionStatus === FormTemplateVersionStatus.ARCHIVED
-                              ? "bg-slate-100 text-slate-500"
-                              : "bg-amber-50 text-amber-700"
-                        }`}
-                      >
-                        {formatVersionStatus(version.versionStatus)}
-                      </span>
-                    </div>
-
-                    <p className="mt-3 text-sm text-slate-600">
-                      Год: {version.reportingYear.year}
-                    </p>
-                    <p className="text-sm text-slate-600">Версия: v{version.version}</p>
-
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <Link
-                        href={`/admin/forms/builder/${version.id}`}
-                        className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
-                      >
-                        Открыть редактор
-                      </Link>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </article>
+              {formType.code}
+            </Link>
           ))}
         </div>
+
+        {activeCatalogGroup ? (
+          <section className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-6">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#1f67ab]">
+                  {activeCatalogGroup.formType.code}
+                </p>
+                <h3 className="mt-2 text-2xl font-semibold text-slate-950">
+                  {activeCatalogGroup.formType.name}
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Шаблонов в группе: {activeCatalogGroup.templates.length}
+                </p>
+              </div>
+              {activeCatalogGroup.formType.description ? (
+                <p className="max-w-2xl text-sm leading-6 text-slate-500">
+                  {activeCatalogGroup.formType.description}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-6 space-y-4">
+              {activeCatalogGroup.templates.map((template) => (
+                <article
+                  key={template.id}
+                  className="rounded-3xl border border-slate-200 bg-white p-5"
+                >
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div className="min-w-0">
+                      <h4 className="text-lg font-semibold text-slate-950">{template.name}</h4>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        {template.description || "Без описания"}
+                      </p>
+                    </div>
+
+                    {isSuperadmin && template.versions.length > 0 ? (
+                      <form
+                        action={duplicateFormVersionAction}
+                        className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 xl:min-w-[380px] xl:max-w-[420px]"
+                      >
+                        <input
+                          type="hidden"
+                          name="sourceVersionId"
+                          value={template.versions[0]?.id}
+                        />
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                          Быстрый дубль версии
+                        </p>
+                        <div className="grid gap-3 sm:grid-cols-[140px_minmax(0,1fr)]">
+                          <select
+                            id={`duplicate-year-${template.id}`}
+                            name="reportingYearId"
+                            defaultValue={reportingYears[0]?.id}
+                            className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                          >
+                            {reportingYears.map((reportingYear) => (
+                              <option key={reportingYear.id} value={reportingYear.id}>
+                                {reportingYear.year}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            name="title"
+                            defaultValue={`${template.name} — новая версия`}
+                            className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                          />
+                        </div>
+                        <div>
+                          <button
+                            type="submit"
+                            className="rounded-2xl border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-white"
+                          >
+                            Дублировать в draft
+                          </button>
+                        </div>
+                      </form>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
+                    <div className="grid grid-cols-[110px_90px_minmax(0,1fr)_170px_150px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                      <div className="px-4 py-3">Год</div>
+                      <div className="px-4 py-3">Версия</div>
+                      <div className="px-4 py-3">Название</div>
+                      <div className="px-4 py-3">Статус</div>
+                      <div className="px-4 py-3">Действие</div>
+                    </div>
+                    <div className="divide-y divide-slate-200 bg-white">
+                      {template.versions.map((version) => (
+                        <div
+                          key={version.id}
+                          className="grid items-center grid-cols-[110px_90px_minmax(0,1fr)_170px_150px] gap-0"
+                        >
+                          <div className="px-4 py-3 text-sm text-slate-700">
+                            {version.reportingYear.year}
+                          </div>
+                          <div className="px-4 py-3 text-sm font-medium text-slate-900">
+                            v{version.version}
+                          </div>
+                          <div className="min-w-0 px-4 py-3 text-sm text-slate-700">
+                            <p className="truncate font-medium text-slate-950">{version.title}</p>
+                          </div>
+                          <div className="px-4 py-3">
+                            <span
+                              className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getVersionStatusClasses(version.versionStatus)}`}
+                            >
+                              {formatVersionStatus(version.versionStatus)}
+                            </span>
+                          </div>
+                          <div className="px-4 py-3">
+                            <Link
+                              href={`/admin/forms/builder/${version.id}`}
+                              className="inline-flex rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                            >
+                              Открыть
+                            </Link>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
@@ -1032,62 +1087,105 @@ export default async function AdminFormsPage({
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h2 className="text-2xl font-semibold text-slate-950">Назначенные формы</h2>
-        <p className="mt-2 text-slate-600">
-          Входящие назначения регионам: {regionIncomingAssignments.length}. Назначения операторам: {operatorAssignments.length}.
-        </p>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-950">Маршруты форм</h2>
+            <p className="mt-2 max-w-3xl text-slate-600">
+              Здесь собраны маршруты по регионам и операторам. Структура уже готова к будущим принятым и завершенным сценариям.
+            </p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            Региональные маршруты: {regionIncomingAssignments.length}. Операторские маршруты:{" "}
+            {operatorAssignments.length}.
+          </div>
+        </div>
 
-        <div className="mt-8 overflow-hidden rounded-3xl border border-slate-200">
-          <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-4 py-3 font-medium text-slate-600">Форма</th>
-                <th className="px-4 py-3 font-medium text-slate-600">Год</th>
-                <th className="px-4 py-3 font-medium text-slate-600">Регион</th>
-                <th className="px-4 py-3 font-medium text-slate-600">Получатель</th>
-                <th className="px-4 py-3 font-medium text-slate-600">Срок</th>
-                <th className="px-4 py-3 font-medium text-slate-600">Статус</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 bg-white">
-              {assignments.map((assignment) => (
-                <tr key={assignment.id}>
-                  <td className="px-4 py-4">
-                    <p className="font-medium text-slate-950">
-                      {assignment.templateVersion.template.formType.name}
-                    </p>
-                    <p className="mt-1 text-slate-500">{assignment.templateVersion.title}</p>
-                  </td>
-                  <td className="px-4 py-4 text-slate-600">
-                    {assignment.reportingYearId
-                      ? assignment.templateVersion.reportingYear.year
-                      : "-"}
-                  </td>
-                  <td className="px-4 py-4 text-slate-600">
-                    {assignment.region.fullName}
-                  </td>
-                  <td className="px-4 py-4 text-slate-600">
-                    {assignment.organization.name}
-                    <p className="mt-1 text-xs text-slate-500">
-                      {assignment.organization.type === OrganizationType.REGION_CENTER
-                        ? "Региональный центр"
-                        : "Организация оператора"}
-                    </p>
-                  </td>
-                  <td className="px-4 py-4 text-slate-600">
-                    {assignment.dueDate
-                      ? assignment.dueDate.toLocaleDateString("ru-RU")
-                      : "Не указан"}
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className="inline-flex rounded-full bg-blue-50 px-3 py-1 font-medium text-blue-700">
-                      {formatAssignmentStatus(assignment.status)}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-8 grid gap-6 xl:grid-cols-3">
+          {routeGroups.map((group) => (
+            <section
+              key={group.key}
+              className="rounded-3xl border border-slate-200 bg-slate-50 p-5"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-950">{group.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">{group.description}</p>
+                </div>
+                <span className="inline-flex rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-700">
+                  {group.items.length}
+                </span>
+              </div>
+
+              {group.items.length === 0 ? (
+                <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
+                  В этой группе пока нет маршрутов.
+                </div>
+              ) : (
+                <div className="mt-5 space-y-3">
+                  {group.items.map(({ assignment, submission, direction, statusLabel }) => (
+                    <article
+                      key={assignment.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#1f67ab]">
+                            {assignment.templateVersion.template.formType.code}
+                          </p>
+                          <h4 className="mt-2 text-base font-semibold text-slate-950">
+                            {assignment.templateVersion.title}
+                          </h4>
+                        </div>
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getRouteStatusClasses(submission?.status ?? null)}`}
+                        >
+                          {statusLabel}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Год</p>
+                          <p className="mt-1">{assignment.templateVersion.reportingYear.year}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Регион</p>
+                          <p className="mt-1">{assignment.region.fullName}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Получатель</p>
+                          <p className="mt-1">{assignment.organization.name}</p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {assignment.organization.type === OrganizationType.REGION_CENTER
+                              ? "Региональный центр"
+                              : "Организация оператора"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Маршрут</p>
+                          <p className="mt-1">{direction}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Срок</p>
+                          <p className="mt-1">
+                            {assignment.dueDate
+                              ? assignment.dueDate.toLocaleDateString("ru-RU")
+                              : "Не указан"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                            Базовый статус назначения
+                          </p>
+                          <p className="mt-1">{formatAssignmentStatus(assignment.status)}</p>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
         </div>
       </section>
     </div>
