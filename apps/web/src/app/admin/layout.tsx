@@ -1,3 +1,6 @@
+import Image from "next/image";
+import Link from "next/link";
+
 import { NavLink } from "@/app/admin/nav-link";
 import { SignOutForm } from "@/app/admin/sign-out-form";
 import { hasRole, requireAdminUser } from "@/lib/access";
@@ -13,41 +16,52 @@ export default async function AdminLayout({
   const isRegionAdmin = hasRole(user, [RoleType.REGION_ADMIN]);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="flex w-full items-center justify-between gap-4 px-6 py-4 xl:px-8 2xl:px-10">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-[0.2em] text-blue-700">
-              Stat Admin
-            </p>
-            <h1 className="text-xl font-semibold text-slate-950">Панель управления</h1>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <p className="text-sm font-medium text-slate-900">{user.fullName}</p>
-              <p className="text-sm text-slate-500">{user.email}</p>
+    <div className="min-h-screen bg-[#f4f6fb] text-slate-950">
+      <div className="min-h-screen w-full">
+        <aside className="border-b border-slate-200 bg-white px-6 py-8 lg:fixed lg:inset-y-0 lg:left-0 lg:w-[296px] lg:overflow-hidden lg:border-b-0 lg:border-r">
+          <div className="flex h-full flex-col">
+          <Link href="/admin" className="flex items-center gap-4">
+            <Image src="/logo.png" alt="Логотип" width={88} height={88} priority />
+            <div>
+              <p className="text-[30px] font-semibold tracking-tight text-slate-950">НМИЦ ИТ</p>
+              <p className="mt-1 text-sm text-slate-500">Статистическая платформа</p>
             </div>
-            <SignOutForm />
-          </div>
-        </div>
-      </header>
+          </Link>
 
-      <div className="grid w-full gap-6 px-6 py-8 xl:px-8 2xl:px-10 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="h-fit rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-6">
-          <nav className="space-y-2">
-            <NavLink href="/admin">Обзор</NavLink>
-            <NavLink href="/admin/forms">Формы</NavLink>
-            {isSuperadmin || isRegionAdmin ? (
-              <NavLink href="/admin/operators">Операторы</NavLink>
-            ) : null}
-            {isSuperadmin ? (
-              <NavLink href="/admin/users">Пользователи</NavLink>
-            ) : null}
+          <nav className="mt-10 space-y-2">
+            <NavLink href="/admin">Статистика</NavLink>
+            <NavLink href="/admin/events">События</NavLink>
+            <NavLink href="/admin/prof-exams">Проф.осмотры</NavLink>
+            <NavLink href="/admin/recommendations">Рекомендации</NavLink>
+            <NavLink href="/admin/knowledge-base">База знаний</NavLink>
+            <NavLink href="/admin/feedback">Обратная связь</NavLink>
           </nav>
+
+          <div className="mt-8 border-t border-slate-200 pt-8">
+            <p className="px-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Управление
+            </p>
+            <nav className="mt-3 space-y-2">
+              <NavLink href="/admin/forms">Формы</NavLink>
+              {isSuperadmin || isRegionAdmin ? <NavLink href="/admin/operators">Операторы</NavLink> : null}
+              {isSuperadmin ? <NavLink href="/admin/users">Пользователи</NavLink> : null}
+            </nav>
+          </div>
+
+          <div className="mt-auto rounded-[1.75rem] border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">{user.fullName}</p>
+            <p className="mt-1 text-sm text-slate-500">{user.email}</p>
+            <p className="mt-2 text-xs uppercase tracking-[0.16em] text-slate-400">
+              {isSuperadmin ? "Суперадмин" : isRegionAdmin ? "Региональный админ" : "Администратор"}
+            </p>
+            <div className="mt-4">
+              <SignOutForm />
+            </div>
+          </div>
+          </div>
         </aside>
 
-        <main className="min-w-0">{children}</main>
+        <main className="min-w-0 px-6 py-8 xl:px-10 lg:ml-[296px]">{children}</main>
       </div>
     </div>
   );

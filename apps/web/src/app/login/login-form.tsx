@@ -36,8 +36,13 @@ export function LoginForm() {
   return (
     <form
       action={handleSubmit}
-      className="flex w-full flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-8 shadow-sm"
+      className="flex w-full flex-col gap-5 rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm"
     >
+      <div className="space-y-2 text-center">
+        <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Вход в систему</h1>
+        <p className="text-sm text-slate-500">Введите учетные данные для входа в рабочий раздел.</p>
+      </div>
+
       <div className="space-y-2">
         <label className="text-sm font-medium text-slate-700" htmlFor="email">
           Email

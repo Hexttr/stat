@@ -18,10 +18,7 @@ import {
   RoleType,
 } from "@/generated/prisma/client";
 import { getAdminScope, hasRole, requireAdminUser } from "@/lib/access";
-import {
-  getLegacyFolderSummary,
-  legacyFormCodes,
-} from "@/lib/form-builder/legacy-import";
+import { legacyFormCodes } from "@/lib/form-builder/legacy-import";
 import { prisma } from "@/lib/prisma";
 
 function formatAssignmentStatus(status: FormAssignmentStatus) {
@@ -79,7 +76,6 @@ export default async function AdminFormsPage({
     regions,
     assignments,
     operators,
-    legacySummaries,
     resolvedSearchParams,
   ] = await Promise.all([
     prisma.formType.findMany({
@@ -163,7 +159,6 @@ export default async function AdminFormsPage({
       },
       orderBy: { fullName: "asc" },
     }),
-    Promise.all(legacyFormCodes.map((code) => getLegacyFolderSummary(code))),
     searchParams ??
       Promise.resolve({} as Record<string, string | string[] | undefined>),
   ]);
@@ -203,16 +198,38 @@ export default async function AdminFormsPage({
   const operatorAssignments = assignments.filter(
     (assignment) => assignment.organization.type === OrganizationType.MEDICAL_FACILITY,
   );
+  const summaryMetrics = [
+    { label: "Типов форм", value: formTypes.length },
+    { label: "Шаблонов", value: templates.length },
+    { label: "Версий", value: templateVersions.length },
+    { label: "Назначений", value: assignments.length },
+  ];
+  const supportedLegacyForms = legacyFormCodes.map((code) => ({
+    code,
+    configured: formTypes.some((formType) => formType.code === code),
+  }));
 
   return (
     <div className="space-y-6">
-      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h2 className="text-2xl font-semibold text-slate-950">Каталог форм</h2>
-        <p className="mt-3 max-w-3xl text-slate-600">
-          Суперадмин управляет шаблонами и версиями форм по годам. Для каждой
-          версии можно открыть table-first редактор, сохранить черновик и после
-          публикации направить форму вниз по оргструктуре.
-        </p>
+      <section className="rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+              Управление формами
+            </p>
+            <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
+              Каталог форм
+            </h1>
+            <p className="mt-3 max-w-3xl text-base leading-7 text-slate-600">
+              Здесь собраны типы форм, шаблоны, версии по годам и назначения по
+              оргструктуре. Экран упрощен для быстрого открытия и презентации:
+              редактор, публикация и распределение остаются доступными.
+            </p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            {isSuperadmin ? "Режим суперадмина" : "Режим регионального администратора"}
+          </div>
+        </div>
 
         {templateCreated ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
@@ -231,6 +248,20 @@ export default async function AdminFormsPage({
             {error}
           </p>
         ) : null}
+
+        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {summaryMetrics.map((metric) => (
+            <article
+              key={metric.label}
+              className="rounded-3xl border border-slate-200 bg-slate-50 p-5"
+            >
+              <p className="text-sm text-slate-500">{metric.label}</p>
+              <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+                {metric.value}
+              </p>
+            </article>
+          ))}
+        </div>
 
         {isSuperadmin ? (
           <div className="mt-8 space-y-6">
@@ -463,31 +494,34 @@ export default async function AdminFormsPage({
                   </h3>
                   <p className="mt-2 max-w-3xl text-sm text-slate-600">
                     Создает черновую draft-версию из реальных `.doc` файлов в локальной
-                    папке `forms/`. Это bootstrap-инструмент для старта структуры:
-                    после импорта откройте preview, проверьте строки, графы и служебные
-                    колонки, затем сохраните и публикуйте.
+                    папке `forms/`. Детальный анализ архива убран с этой страницы, чтобы
+                    раздел открывался быстрее. Сам импорт и дальнейшая ручная доводка в
+                    preview-редакторе работают как раньше.
                   </p>
                 </div>
               </div>
 
               <div className="grid gap-3 lg:grid-cols-5">
-                {legacySummaries.map((summary) => (
+                {supportedLegacyForms.map((form) => (
                   <div
-                    key={summary.formCode}
+                    key={form.code}
                     className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm"
                   >
-                    <p className="font-semibold text-slate-950">{summary.formCode}</p>
-                    <p className="mt-2 text-slate-600">Файлов в архиве: {summary.fileCount}</p>
-                    <p className="mt-1 text-slate-600">Таблиц в sample: {summary.tableCount}</p>
-                    <p className="mt-1 text-slate-600">Строк в sample: {summary.totalRows}</p>
-                    <p className="mt-2 break-all text-xs text-slate-500">
-                      Выбранный sample: {summary.sampleFileName ?? "нет"}
+                    <p className="font-semibold text-slate-950">{form.code}</p>
+                    <p className="mt-2 text-slate-600">
+                      {form.configured
+                        ? "Форма подключена и доступна для создания черновика."
+                        : "Тип формы пока не создан в каталоге."}
                     </p>
-                    {summary.fallbackUsed ? (
-                      <p className="mt-2 text-xs font-medium text-amber-700">
-                        Сейчас sample распознается с fallback, нужен ручной контроль.
-                      </p>
-                    ) : null}
+                    <span
+                      className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                        form.configured
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {form.configured ? "Готово к bootstrap" : "Нужно добавить тип"}
+                    </span>
                   </div>
                 ))}
               </div>
