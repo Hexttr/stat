@@ -8,6 +8,7 @@ import {
   createFormVersionAction,
   createOperatorFormAssignmentAction,
   createOperatorFormAssignmentsForAllAction,
+  deleteFormVersionAction,
   duplicateFormVersionAction,
 } from "@/app/admin/actions";
 import {
@@ -97,10 +98,12 @@ function getRouteStatusClasses(status: SubmissionStatus | null) {
   }
 }
 
-type RouteGroupKey = "assigned" | "review" | "accepted";
+type RouteGroupKey = "assigned" | "working" | "review" | "accepted";
 
 function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
   switch (status) {
+    case SubmissionStatus.DRAFT:
+      return "working";
     case SubmissionStatus.SUBMITTED:
     case SubmissionStatus.IN_REVIEW:
     case SubmissionStatus.CHANGES_REQUESTED:
@@ -109,7 +112,6 @@ function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
     case SubmissionStatus.APPROVED_BY_REGION:
     case SubmissionStatus.APPROVED_BY_SUPERADMIN:
       return "accepted";
-    case SubmissionStatus.DRAFT:
     default:
       return "assigned";
   }
@@ -117,6 +119,11 @@ function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
 
 function getRouteGroupMeta(group: RouteGroupKey) {
   switch (group) {
+    case "working":
+      return {
+        title: "В работе",
+        description: "Маршруты с начатым, но еще не отправленным заполнением.",
+      };
     case "review":
       return {
         title: "На проверке",
@@ -287,15 +294,17 @@ export default async function AdminFormsPage({
     typeof params.tab === "string" && ["template", "type", "version"].includes(params.tab)
       ? params.tab
       : "template";
+  const selectedRouteTab =
+    typeof params.routes === "string" &&
+    ["assigned", "working", "review", "accepted"].includes(params.routes)
+      ? params.routes
+      : "assigned";
 
   const publishedVersions = templateVersions.filter(
     (version) => version.versionStatus === FormTemplateVersionStatus.PUBLISHED,
   );
   const regionIncomingAssignments = assignments.filter(
     (assignment) => assignment.organization.type === OrganizationType.REGION_CENTER,
-  );
-  const operatorAssignments = assignments.filter(
-    (assignment) => assignment.organization.type === OrganizationType.MEDICAL_FACILITY,
   );
   const summaryMetrics = [
     { label: "Типов форм", value: formTypes.length },
@@ -318,6 +327,16 @@ export default async function AdminFormsPage({
     templatesByFormType.find((group) => group.formType.code === selectedCatalogTypeCode) ??
     templatesByFormType[0] ??
     null;
+  const availableRouteYears = Array.from(
+    new Set(assignments.map((assignment) => assignment.templateVersion.reportingYear.year)),
+  ).sort((left, right) => right - left);
+  const selectedRouteYear =
+    typeof params.routeYear === "string" && !Number.isNaN(Number(params.routeYear))
+      ? Number(params.routeYear)
+      : availableRouteYears.includes(2026)
+        ? 2026
+        : availableRouteYears[0] ?? reportingYears[0]?.year ?? 2026;
+  const formsPageQuery = `tab=${selectedCreateTab}&catalog=${selectedCatalogTypeCode ?? ""}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`;
   const routeItems = assignments.map((assignment) => {
     const submission = assignment.submissions[0] ?? null;
     const routeGroup = getRouteGroupKey(submission?.status ?? null);
@@ -336,21 +355,26 @@ export default async function AdminFormsPage({
         : formatAssignmentStatus(assignment.status),
     };
   });
+  const filteredRouteItems = routeItems.filter(
+    (route) => route.assignment.templateVersion.reportingYear.year === selectedRouteYear,
+  );
   const routeGroups: Array<{
     key: RouteGroupKey;
     title: string;
     description: string;
-    items: typeof routeItems;
-  }> = (["assigned", "review", "accepted"] as const).map((groupKey) => {
+    items: typeof filteredRouteItems;
+  }> = (["assigned", "working", "review", "accepted"] as const).map((groupKey) => {
     const meta = getRouteGroupMeta(groupKey);
 
     return {
       key: groupKey,
       title: meta.title,
       description: meta.description,
-      items: routeItems.filter((route) => route.routeGroup === groupKey),
+      items: filteredRouteItems.filter((route) => route.routeGroup === groupKey),
     };
   });
+  const activeRouteGroup =
+    routeGroups.find((group) => group.key === selectedRouteTab) ?? routeGroups[0];
 
   return (
     <div className="space-y-6">
@@ -405,7 +429,8 @@ export default async function AdminFormsPage({
           <div className="mt-8 space-y-6">
             <div className="flex flex-wrap gap-3">
               <Link
-                href="/admin/forms?tab=template"
+                href={`/admin/forms?tab=template&catalog=${selectedCatalogTypeCode ?? ""}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`}
+                scroll={false}
                 className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
                   selectedCreateTab === "template"
                     ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
@@ -415,7 +440,8 @@ export default async function AdminFormsPage({
                 Новый шаблон
               </Link>
               <Link
-                href="/admin/forms?tab=type"
+                href={`/admin/forms?tab=type&catalog=${selectedCatalogTypeCode ?? ""}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`}
+                scroll={false}
                 className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
                   selectedCreateTab === "type"
                     ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
@@ -425,7 +451,8 @@ export default async function AdminFormsPage({
                 Новый тип формы
               </Link>
               <Link
-                href="/admin/forms?tab=version"
+                href={`/admin/forms?tab=version&catalog=${selectedCatalogTypeCode ?? ""}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`}
+                scroll={false}
                 className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
                   selectedCreateTab === "version"
                     ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
@@ -616,7 +643,10 @@ export default async function AdminFormsPage({
         )}
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+      <section
+        id="templates-catalog"
+        className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm"
+      >
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h2 className="text-2xl font-semibold text-slate-950">Шаблоны и версии</h2>
@@ -633,7 +663,8 @@ export default async function AdminFormsPage({
           {templatesByFormType.map(({ formType }) => (
             <Link
               key={formType.id}
-              href={`/admin/forms?tab=${selectedCreateTab}&catalog=${formType.code}`}
+              href={`/admin/forms?tab=${selectedCreateTab}&catalog=${formType.code}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`}
+              scroll={false}
               className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
                 selectedCatalogTypeCode === formType.code
                   ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
@@ -683,49 +714,45 @@ export default async function AdminFormsPage({
                     {isSuperadmin && template.versions.length > 0 ? (
                       <form
                         action={duplicateFormVersionAction}
-                        className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 xl:min-w-[380px] xl:max-w-[420px]"
+                        className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 xl:min-w-[720px]"
                       >
                         <input
                           type="hidden"
                           name="sourceVersionId"
                           value={template.versions[0]?.id}
                         />
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                        <p className="shrink-0 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
                           Быстрый дубль версии
                         </p>
-                        <div className="grid gap-3 sm:grid-cols-[140px_minmax(0,1fr)]">
-                          <select
-                            id={`duplicate-year-${template.id}`}
-                            name="reportingYearId"
-                            defaultValue={reportingYears[0]?.id}
-                            className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
-                          >
-                            {reportingYears.map((reportingYear) => (
-                              <option key={reportingYear.id} value={reportingYear.id}>
-                                {reportingYear.year}
-                              </option>
-                            ))}
-                          </select>
-                          <input
-                            name="title"
-                            defaultValue={`${template.name} — новая версия`}
-                            className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
-                          />
-                        </div>
-                        <div>
-                          <button
-                            type="submit"
-                            className="rounded-2xl border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-white"
-                          >
-                            Дублировать в draft
-                          </button>
-                        </div>
+                        <select
+                          id={`duplicate-year-${template.id}`}
+                          name="reportingYearId"
+                          defaultValue={reportingYears[0]?.id}
+                          className="min-w-[120px] rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                        >
+                          {reportingYears.map((reportingYear) => (
+                            <option key={reportingYear.id} value={reportingYear.id}>
+                              {reportingYear.year}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          name="title"
+                          defaultValue={`${template.name} — новая версия`}
+                          className="min-w-[260px] flex-1 rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                        />
+                        <button
+                          type="submit"
+                          className="shrink-0 rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-white"
+                        >
+                          Дублировать в draft
+                        </button>
                       </form>
                     ) : null}
                   </div>
 
                   <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
-                    <div className="grid grid-cols-[110px_90px_minmax(0,1fr)_170px_150px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <div className="grid grid-cols-[110px_90px_minmax(0,1fr)_170px_220px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                       <div className="px-4 py-3">Год</div>
                       <div className="px-4 py-3">Версия</div>
                       <div className="px-4 py-3">Название</div>
@@ -736,7 +763,7 @@ export default async function AdminFormsPage({
                       {template.versions.map((version) => (
                         <div
                           key={version.id}
-                          className="grid items-center grid-cols-[110px_90px_minmax(0,1fr)_170px_150px] gap-0"
+                          className="grid items-center grid-cols-[110px_90px_minmax(0,1fr)_170px_220px] gap-0"
                         >
                           <div className="px-4 py-3 text-sm text-slate-700">
                             {version.reportingYear.year}
@@ -755,12 +782,30 @@ export default async function AdminFormsPage({
                             </span>
                           </div>
                           <div className="px-4 py-3">
-                            <Link
-                              href={`/admin/forms/builder/${version.id}`}
-                              className="inline-flex rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
-                            >
-                              Открыть
-                            </Link>
+                            <div className="flex items-center gap-2 whitespace-nowrap">
+                              <Link
+                                href={`/admin/forms/builder/${version.id}`}
+                                className="inline-flex rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                              >
+                                Открыть
+                              </Link>
+                              {isSuperadmin ? (
+                                <form action={deleteFormVersionAction}>
+                                  <input type="hidden" name="versionId" value={version.id} />
+                                  <input
+                                    type="hidden"
+                                    name="returnTo"
+                                    value={`/admin/forms?${formsPageQuery}#templates-catalog`}
+                                  />
+                                  <button
+                                    type="submit"
+                                    className="inline-flex rounded-2xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+                                  >
+                                    Удалить
+                                  </button>
+                                </form>
+                              ) : null}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -865,7 +910,7 @@ export default async function AdminFormsPage({
               <div>
                 <button
                   type="submit"
-                  className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
+                  className="rounded-2xl bg-[#1f67ab] px-5 py-3 font-medium text-white transition hover:bg-[#185993]"
                 >
                   Назначить форму региону
                 </button>
@@ -1094,98 +1139,126 @@ export default async function AdminFormsPage({
               Здесь собраны маршруты по регионам и операторам. Структура уже готова к будущим принятым и завершенным сценариям.
             </p>
           </div>
-          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
-            Региональные маршруты: {regionIncomingAssignments.length}. Операторские маршруты:{" "}
-            {operatorAssignments.length}.
-          </div>
+          <form className="flex flex-wrap items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+            <input type="hidden" name="tab" value={selectedCreateTab} />
+            <input type="hidden" name="catalog" value={selectedCatalogTypeCode ?? ""} />
+            <input type="hidden" name="routes" value={selectedRouteTab} />
+            <label className="text-sm font-medium text-slate-600" htmlFor="routeYear">
+              Год
+            </label>
+            <select
+              id="routeYear"
+              name="routeYear"
+              defaultValue={String(selectedRouteYear)}
+              className="rounded-2xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              {availableRouteYears.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="rounded-2xl bg-[#1f67ab] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#185993]"
+            >
+              Показать
+            </button>
+          </form>
         </div>
 
-        <div className="mt-8 grid gap-6 xl:grid-cols-3">
+        <div className="mt-6 flex flex-wrap gap-3">
           {routeGroups.map((group) => (
-            <section
+            <Link
               key={group.key}
+              href={`/admin/forms?tab=${selectedCreateTab}&catalog=${selectedCatalogTypeCode ?? ""}&routes=${group.key}&routeYear=${selectedRouteYear}`}
+              scroll={false}
+              className={`rounded-2xl px-5 py-3 text-sm font-medium transition ${
+                selectedRouteTab === group.key
+                  ? "bg-[#1f67ab] text-white shadow-[0_12px_24px_rgba(31,103,171,0.18)]"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
+            >
+              {group.title}
+            </Link>
+          ))}
+        </div>
+
+        <div className="mt-8">
+          {activeRouteGroup ? (
+            <section
+              key={activeRouteGroup.key}
               className="rounded-3xl border border-slate-200 bg-slate-50 p-5"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-950">{group.title}</h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-500">{group.description}</p>
+                  <h3 className="text-lg font-semibold text-slate-950">{activeRouteGroup.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">{activeRouteGroup.description}</p>
                 </div>
                 <span className="inline-flex rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-700">
-                  {group.items.length}
+                  {activeRouteGroup.items.length}
                 </span>
               </div>
 
-              {group.items.length === 0 ? (
+              {activeRouteGroup.items.length === 0 ? (
                 <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
                   В этой группе пока нет маршрутов.
                 </div>
               ) : (
-                <div className="mt-5 space-y-3">
-                  {group.items.map(({ assignment, submission, direction, statusLabel }) => (
-                    <article
+                <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="grid grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <div className="px-4 py-3">Форма</div>
+                    <div className="px-4 py-3">Название</div>
+                    <div className="px-4 py-3">Регион</div>
+                    <div className="px-4 py-3">Получатель</div>
+                    <div className="px-4 py-3">Маршрут</div>
+                    <div className="px-4 py-3">Срок</div>
+                    <div className="px-4 py-3">Статус</div>
+                  </div>
+                  <div className="divide-y divide-slate-200">
+                  {activeRouteGroup.items.map(({ assignment, submission, direction, statusLabel }) => (
+                    <div
                       key={assignment.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-4"
+                      className="grid items-center grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px] gap-0"
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#1f67ab]">
-                            {assignment.templateVersion.template.formType.code}
-                          </p>
-                          <h4 className="mt-2 text-base font-semibold text-slate-950">
-                            {assignment.templateVersion.title}
-                          </h4>
-                        </div>
+                      <div className="px-4 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f67ab]">
+                        {assignment.templateVersion.template.formType.code}
+                      </div>
+                      <div className="min-w-0 px-4 py-3 text-sm text-slate-700">
+                        <p className="truncate font-medium text-slate-950">
+                          {assignment.templateVersion.title}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {assignment.templateVersion.reportingYear.year} ·{" "}
+                          {formatAssignmentStatus(assignment.status)}
+                        </p>
+                      </div>
+                      <div className="truncate px-4 py-3 text-sm text-slate-700">
+                        {assignment.region.fullName}
+                      </div>
+                      <div className="truncate px-4 py-3 text-sm text-slate-700">
+                        {assignment.organization.name}
+                      </div>
+                      <div className="truncate px-4 py-3 text-sm text-slate-600">{direction}</div>
+                      <div className="px-4 py-3 text-sm text-slate-600">
+                        {assignment.dueDate
+                          ? assignment.dueDate.toLocaleDateString("ru-RU")
+                          : "Не указан"}
+                      </div>
+                      <div className="px-4 py-3">
                         <span
                           className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getRouteStatusClasses(submission?.status ?? null)}`}
                         >
                           {statusLabel}
                         </span>
                       </div>
-
-                      <div className="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Год</p>
-                          <p className="mt-1">{assignment.templateVersion.reportingYear.year}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Регион</p>
-                          <p className="mt-1">{assignment.region.fullName}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Получатель</p>
-                          <p className="mt-1">{assignment.organization.name}</p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {assignment.organization.type === OrganizationType.REGION_CENTER
-                              ? "Региональный центр"
-                              : "Организация оператора"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Маршрут</p>
-                          <p className="mt-1">{direction}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Срок</p>
-                          <p className="mt-1">
-                            {assignment.dueDate
-                              ? assignment.dueDate.toLocaleDateString("ru-RU")
-                              : "Не указан"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">
-                            Базовый статус назначения
-                          </p>
-                          <p className="mt-1">{formatAssignmentStatus(assignment.status)}</p>
-                        </div>
-                      </div>
-                    </article>
+                    </div>
                   ))}
+                  </div>
                 </div>
               )}
             </section>
-          ))}
+          ) : null}
         </div>
       </section>
     </div>

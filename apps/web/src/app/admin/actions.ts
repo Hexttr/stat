@@ -102,6 +102,11 @@ const duplicateFormVersionSchema = z.object({
   title: z.string().trim().min(3, "Укажите название версии."),
 });
 
+const deleteFormVersionSchema = z.object({
+  versionId: z.string().min(1, "Не найдена версия формы."),
+  returnTo: z.string().trim().optional(),
+});
+
 const saveFormVersionSchema = z.object({
   versionId: z.string().min(1, "Не найдена версия формы."),
   title: z.string().trim().min(3, "Укажите название версии."),
@@ -1036,6 +1041,60 @@ export async function duplicateFormVersionAction(formData: FormData) {
 
   revalidatePath("/admin/forms");
   redirect(`/admin/forms/builder/${version.id}`);
+}
+
+export async function deleteFormVersionAction(formData: FormData) {
+  await requireSuperadmin();
+  const rawReturnTo = String(formData.get("returnTo") ?? "/admin/forms");
+  const redirectWithError = (message: string) => {
+    redirect(
+      `${rawReturnTo}${rawReturnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`,
+    );
+  };
+
+  const parsed = deleteFormVersionSchema.safeParse({
+    versionId: formData.get("versionId"),
+    returnTo: formData.get("returnTo"),
+  });
+
+  if (!parsed.success) {
+    redirectWithError(parsed.error.issues[0]?.message ?? "Не удалось удалить версию формы.");
+  }
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: { id: parsed.data.versionId },
+    include: {
+      assignments: {
+        select: {
+          id: true,
+        },
+        take: 1,
+      },
+    },
+  });
+
+  if (!version) {
+    redirectWithError("Версия формы не найдена.");
+  }
+
+  if (version.assignments.length > 0) {
+    redirectWithError(
+      "Версию нельзя удалить, пока она используется в маршрутах или назначениях.",
+    );
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.formField.deleteMany({
+      where: { templateVersionId: version.id },
+    });
+
+    await tx.formTemplateVersion.delete({
+      where: { id: version.id },
+    });
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(parsed.data.returnTo || "/admin/forms");
 }
 
 export async function saveFormVersionDraftAction(formData: FormData) {
