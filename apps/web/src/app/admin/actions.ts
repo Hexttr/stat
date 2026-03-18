@@ -20,8 +20,9 @@ import {
   createDefaultFormSchema,
   duplicateFormSchema,
   formBuilderSchema,
-  normalizeFormSchema,
+  parseAndNormalizeFormSchema,
 } from "@/lib/form-builder/schema";
+import { importLegacyFormSchema } from "@/lib/form-builder/legacy-import";
 import { projectSchemaToFields } from "@/lib/form-builder/projection";
 import { prisma } from "@/lib/prisma";
 
@@ -73,6 +74,12 @@ const createFormVersionSchema = z.object({
   templateId: z.string().min(1, "Выберите шаблон."),
   reportingYearId: z.string().min(1, "Выберите отчетный год."),
   title: z.string().trim().min(3, "Укажите название версии."),
+});
+
+const importLegacyFormVersionSchema = z.object({
+  formTypeId: z.string().min(1, "Выберите тип формы."),
+  reportingYearId: z.string().min(1, "Выберите отчетный год."),
+  title: z.string().trim().min(3, "Укажите название импортируемой версии."),
 });
 
 const duplicateFormVersionSchema = z.object({
@@ -215,35 +222,52 @@ async function replaceVersionProjection(params: {
   schema: z.infer<typeof formBuilderSchema>;
 }) {
   const projectedFields = projectSchemaToFields(params.schema);
+  const createManyPayload = projectedFields.map((field) => ({
+    templateVersionId: params.templateVersionId,
+    key: field.key,
+    label: field.label,
+    section: field.section,
+    tableId: field.tableId,
+    rowId: field.rowId,
+    rowKey: field.rowKey,
+    columnId: field.columnId,
+    columnKey: field.columnKey,
+    fieldPath: field.fieldPath,
+    fieldType: field.fieldType,
+    unit: field.unit,
+    placeholder: field.placeholder,
+    helpText: field.helpText,
+    sortOrder: field.sortOrder,
+    isRequired: field.isRequired,
+    validationJson: field.validationJson ?? undefined,
+  }));
 
-  await prisma.$transaction([
-    prisma.formField.deleteMany({
-      where: { templateVersionId: params.templateVersionId },
-    }),
-    ...projectedFields.map((field) =>
-      prisma.formField.create({
-        data: {
-          templateVersionId: params.templateVersionId,
-          key: field.key,
-          label: field.label,
-          section: field.section,
-          tableId: field.tableId,
-          rowId: field.rowId,
-          rowKey: field.rowKey,
-          columnId: field.columnId,
-          columnKey: field.columnKey,
-          fieldPath: field.fieldPath,
-          fieldType: field.fieldType,
-          unit: field.unit,
-          placeholder: field.placeholder,
-          helpText: field.helpText,
-          sortOrder: field.sortOrder,
-          isRequired: field.isRequired,
-          validationJson: field.validationJson ?? undefined,
-        },
-      }),
-    ),
-  ]);
+  const chunkSize = 500;
+  const payloadChunks = Array.from(
+    { length: Math.ceil(createManyPayload.length / chunkSize) },
+    (_, index) => createManyPayload.slice(index * chunkSize, (index + 1) * chunkSize),
+  );
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.formField.deleteMany({
+        where: { templateVersionId: params.templateVersionId },
+      });
+
+      for (const chunk of payloadChunks) {
+        if (chunk.length === 0) {
+          continue;
+        }
+
+        await tx.formField.createMany({
+          data: chunk,
+        });
+      }
+    },
+    {
+      timeout: 30_000,
+    },
+  );
 }
 
 async function getEditableFormVersion(versionId: string) {
@@ -785,6 +809,90 @@ export async function createFormVersionAction(formData: FormData) {
   redirect(`/admin/forms/builder/${version.id}`);
 }
 
+export async function importLegacyFormVersionAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = importLegacyFormVersionSchema.safeParse({
+    formTypeId: formData.get("formTypeId"),
+    reportingYearId: formData.get("reportingYearId"),
+    title: formData.get("title"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось импортировать форму из архива 2024.",
+      )}`,
+    );
+  }
+
+  const formType = await prisma.formType.findUnique({
+    where: { id: parsed.data.formTypeId },
+  });
+  const reportingYear = await prisma.reportingYear.findUnique({
+    where: { id: parsed.data.reportingYearId },
+  });
+
+  if (!formType || !reportingYear) {
+    redirect("/admin/forms?error=Не удалось определить тип формы или отчетный год.");
+  }
+
+  if (!["F12", "F14", "F19", "F30"].includes(formType.code)) {
+    redirect("/admin/forms?error=Для этого типа формы еще не настроен импорт из архива 2024.");
+  }
+
+  let template = await prisma.formTemplate.findFirst({
+    where: {
+      formTypeId: formType.id,
+      name: `${formType.name} — архивная структура 2024`,
+    },
+  });
+
+  if (!template) {
+    template = await prisma.formTemplate.create({
+      data: {
+        formTypeId: formType.id,
+        name: `${formType.name} — архивная структура 2024`,
+        description: "Шаблон, импортированный из реальных файлов федерального статистического наблюдения за 2024 год.",
+      },
+    });
+  }
+
+  const latestVersion = await prisma.formTemplateVersion.findFirst({
+    where: {
+      templateId: template.id,
+      reportingYearId: reportingYear.id,
+    },
+    orderBy: { version: "desc" },
+  });
+
+  const nextVersionNumber = (latestVersion?.version ?? 0) + 1;
+  const schema = await importLegacyFormSchema({
+    formCode: formType.code as "F12" | "F14" | "F19" | "F30",
+    reportingYear: reportingYear.year,
+    title: parsed.data.title,
+  });
+
+  const version = await prisma.formTemplateVersion.create({
+    data: {
+      templateId: template.id,
+      reportingYearId: reportingYear.id,
+      version: nextVersionNumber,
+      title: parsed.data.title,
+      versionStatus: FormTemplateVersionStatus.DRAFT,
+      schemaJson: schema,
+    },
+  });
+
+  await replaceVersionProjection({
+    templateVersionId: version.id,
+    schema,
+  });
+
+  revalidatePath("/admin/forms");
+  redirect(`/admin/forms/builder/${version.id}`);
+}
+
 export async function duplicateFormVersionAction(formData: FormData) {
   await requireSuperadmin();
 
@@ -882,7 +990,7 @@ export async function saveFormVersionDraftAction(formData: FormData) {
   }
 
   const rawSchema = JSON.parse(parsed.data.schemaJson);
-  const normalizedSchema = normalizeFormSchema(formBuilderSchema.parse(rawSchema));
+  const normalizedSchema = parseAndNormalizeFormSchema(rawSchema);
 
   await prisma.formTemplateVersion.update({
     where: { id: version.id },
@@ -915,7 +1023,7 @@ export async function publishFormVersionAction(formData: FormData) {
   }
 
   const version = await getEditableFormVersion(parsed.data.versionId);
-  const schema = normalizeFormSchema(formBuilderSchema.parse(version.schemaJson));
+  const schema = parseAndNormalizeFormSchema(version.schemaJson);
 
   await prisma.formTemplateVersion.update({
     where: { id: version.id },

@@ -90,3 +90,15 @@ export async function requireSuperadmin() {
 
   return user;
 }
+
+export async function requireOperatorUser() {
+  const user = await requireAuthenticatedUser();
+
+  const isOperator = hasRole(user, [RoleType.OPERATOR]);
+
+  if (!isOperator) {
+    redirect("/admin");
+  }
+
+  return user;
+}

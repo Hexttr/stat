@@ -1,4 +1,5 @@
 import { FormBuilderSchema } from "@/lib/form-builder/schema";
+import { buildRuntimeFieldDefinitions } from "@/lib/form-builder/runtime";
 
 export type ProjectedFormField = {
   key: string;
@@ -20,50 +21,26 @@ export type ProjectedFormField = {
 };
 
 export function projectSchemaToFields(schema: FormBuilderSchema): ProjectedFormField[] {
-  const headerFields: ProjectedFormField[] = schema.headerFields.map((field, index) => ({
+  const fields = buildRuntimeFieldDefinitions(schema);
+
+  return fields.map((field, index) => ({
     key: field.key,
     label: field.label,
-    section: "header",
-    tableId: null,
-    rowId: null,
-    rowKey: null,
-    columnId: null,
-    columnKey: null,
-    fieldPath: `header.${field.key}`,
+    section: field.section,
+    tableId: field.tableId,
+    rowId: field.rowId,
+    rowKey: field.rowKey,
+    columnId: field.columnId,
+    columnKey: field.columnKey,
+    fieldPath: field.tableId && field.rowId && field.columnId
+      ? `tables.${field.tableId}.rows.${field.rowId}.columns.${field.columnId}`
+      : `header.${field.key}`,
     fieldType: field.fieldType,
-    unit: null,
-    placeholder: field.placeholder ?? null,
-    helpText: null,
+    unit: field.unit,
+    placeholder: field.placeholder,
+    helpText: field.helpText,
     sortOrder: index,
-    isRequired: field.required,
-    validationJson: null,
+    isRequired: field.isRequired,
+    validationJson: field.validation,
   }));
-
-  const tableFields = schema.tables.flatMap((table, tableIndex) =>
-    table.rows.flatMap((row, rowIndex) =>
-      table.columns.map((column, columnIndex) => ({
-        key: `${table.id}__${row.key}__${column.key}`,
-        label: `${row.label} / ${column.label}`,
-        section: table.title,
-        tableId: table.id,
-        rowId: row.id,
-        rowKey: row.key,
-        columnId: column.id,
-        columnKey: column.key,
-        fieldPath: `tables.${table.id}.rows.${row.id}.columns.${column.id}`,
-        fieldType: column.fieldType,
-        unit: column.unit ?? null,
-        placeholder: column.placeholder ?? null,
-        helpText: column.helpText ?? null,
-        sortOrder: tableIndex * 100000 + rowIndex * 1000 + columnIndex,
-        isRequired: column.required,
-        validationJson:
-          column.fieldType === "select" && column.options.length > 0
-            ? { options: column.options }
-            : null,
-      })),
-    ),
-  );
-
-  return [...headerFields, ...tableFields];
 }

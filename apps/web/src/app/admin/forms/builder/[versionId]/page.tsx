@@ -9,7 +9,7 @@ import { requireSuperadmin } from "@/lib/access";
 import { formBuilderSchema } from "@/lib/form-builder/schema";
 import { prisma } from "@/lib/prisma";
 
-import { FormBuilderEditor } from "./form-builder-editor";
+import { FormBuilderWorkspace } from "./form-builder-workspace";
 
 export default async function FormBuilderPage({
   params,
@@ -50,7 +50,7 @@ export default async function FormBuilderPage({
       : null;
 
   return (
-    <FormBuilderEditor
+    <FormBuilderWorkspace
       versionId={version.id}
       formCode={version.template.formType.code}
       templateName={version.template.name}

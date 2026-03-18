@@ -15,7 +15,7 @@ export default async function AdminLayout({
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
+        <div className="flex w-full items-center justify-between gap-4 px-6 py-4 xl:px-8 2xl:px-10">
           <div>
             <p className="text-sm font-medium uppercase tracking-[0.2em] text-blue-700">
               Stat Admin
@@ -33,8 +33,8 @@ export default async function AdminLayout({
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[240px_1fr]">
-        <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="grid w-full gap-6 px-6 py-8 xl:px-8 2xl:px-10 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="h-fit rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-6">
           <nav className="space-y-2">
             <NavLink href="/admin">Обзор</NavLink>
             <NavLink href="/admin/forms">Формы</NavLink>
@@ -47,7 +47,7 @@ export default async function AdminLayout({
           </nav>
         </aside>
 
-        <main>{children}</main>
+        <main className="min-w-0">{children}</main>
       </div>
     </div>
   );

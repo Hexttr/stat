@@ -4,6 +4,16 @@ import { auth } from "@/auth";
 
 export default async function Home() {
   const session = await auth();
+  const hasAdminMembership =
+    session?.user?.memberships?.some(
+      (membership) =>
+        membership.role === "SUPERADMIN" || membership.role === "REGION_ADMIN",
+    ) ?? false;
+  const defaultAppHref = session?.user?.id
+    ? hasAdminMembership
+      ? "/admin"
+      : "/operator"
+    : "/login";
   const steps = [
     {
       title: "1. Роли и организации",
@@ -45,10 +55,10 @@ export default async function Home() {
           </p>
           <div className="flex flex-wrap gap-3 pt-2">
             <Link
-              href={session?.user?.id ? "/admin/users" : "/login"}
+              href={defaultAppHref}
               className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
             >
-              {session?.user?.id ? "Открыть админку" : "Войти в админку"}
+              {session?.user?.id ? "Открыть рабочий раздел" : "Войти в сервис"}
             </Link>
             <a
               href="#foundation"

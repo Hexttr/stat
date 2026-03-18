@@ -7,7 +7,12 @@ export default async function LoginPage() {
   const session = await auth();
 
   if (session?.user?.id) {
-    redirect("/admin");
+    const hasAdminMembership = session.user.memberships.some(
+      (membership) =>
+        membership.role === "SUPERADMIN" || membership.role === "REGION_ADMIN",
+    );
+
+    redirect(hasAdminMembership ? "/admin" : "/operator");
   }
 
   return (

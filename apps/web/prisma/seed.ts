@@ -3,10 +3,12 @@ import "dotenv/config";
 import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import {
+  FormAssignmentStatus,
   FormTemplateVersionStatus,
   OrganizationType,
   PrismaClient,
   RoleType,
+  SubmissionStatus,
 } from "../src/generated/prisma/client";
 import { projectSchemaToFields } from "../src/lib/form-builder/projection";
 import { FormBuilderSchema } from "../src/lib/form-builder/schema";
@@ -115,7 +117,7 @@ const regions = [
 ];
 
 const reportingYears = [
-  { year: 2024, isOpenForInput: false, isPublished: true },
+  { year: 2024, isOpenForInput: true, isPublished: true },
   { year: 2025, isOpenForInput: true, isPublished: false },
   { year: 2026, isOpenForInput: false, isPublished: false },
 ];
@@ -252,6 +254,9 @@ async function seedFormTemplates() {
             fieldType: "text",
             required: true,
             placeholder: "Наименование региона",
+            helpText: null,
+            options: [],
+            validation: {},
           },
         ],
         tables: [
@@ -259,6 +264,15 @@ async function seedFormTemplates() {
             id: "table_main",
             title: "Основные показатели",
             description: "Главная статистическая таблица формы.",
+            descriptorColumns: [
+              {
+                id: "descriptor_row_number",
+                key: "row_number",
+                label: "№ строки",
+                width: 120,
+                sticky: false,
+              },
+            ],
             columns: [
               {
                 id: "column_value",
@@ -272,6 +286,7 @@ async function seedFormTemplates() {
                 placeholder: "Введите значение",
                 helpText: null,
                 options: [],
+                validation: {},
               },
             ],
             rows: fields.map((field, index) => ({
@@ -279,6 +294,12 @@ async function seedFormTemplates() {
               key: field.key,
               label: field.label,
               description: field.unit ? `Единица измерения: ${field.unit}` : null,
+              rowType: "data" as const,
+              indent: 0,
+              groupPrefix: null,
+              descriptorValues: {
+                descriptor_row_number: String(index + 1),
+              },
             })),
             settings: {
               stickyHeader: true,
@@ -424,12 +445,208 @@ async function seedSuperadmin() {
   }
 }
 
+async function seedDemoAccessAndAssignments() {
+  const region = await prisma.region.findUnique({
+    where: { code: "MOSCOW" },
+  });
+
+  if (!region) {
+    return;
+  }
+
+  const regionCenter = await prisma.organization.findFirst({
+    where: {
+      regionId: region.id,
+      type: OrganizationType.REGION_CENTER,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (!regionCenter) {
+    return;
+  }
+
+  const demoFacility = await prisma.organization.upsert({
+    where: {
+      regionId_name: {
+        regionId: region.id,
+        name: "Демо-оператор Москва",
+      },
+    },
+    update: {
+      type: OrganizationType.MEDICAL_FACILITY,
+      parentId: regionCenter.id,
+    },
+    create: {
+      name: "Демо-оператор Москва",
+      type: OrganizationType.MEDICAL_FACILITY,
+      regionId: region.id,
+      parentId: regionCenter.id,
+    },
+  });
+
+  const regionAdminPasswordHash = await hash(
+    process.env.DEMO_REGION_ADMIN_PASSWORD ?? "RegionAdmin123!",
+    10,
+  );
+  const operatorPasswordHash = await hash(
+    process.env.DEMO_OPERATOR_PASSWORD ?? "Operator123!",
+    10,
+  );
+
+  const regionAdmin = await prisma.user.upsert({
+    where: {
+      email: process.env.DEMO_REGION_ADMIN_EMAIL ?? "region-admin@stat.local",
+    },
+    update: {
+      fullName: "Региональный администратор Москва",
+      passwordHash: regionAdminPasswordHash,
+      isActive: true,
+    },
+    create: {
+      email: process.env.DEMO_REGION_ADMIN_EMAIL ?? "region-admin@stat.local",
+      fullName: "Региональный администратор Москва",
+      passwordHash: regionAdminPasswordHash,
+      isActive: true,
+    },
+  });
+
+  const operator = await prisma.user.upsert({
+    where: {
+      email: process.env.DEMO_OPERATOR_EMAIL ?? "operator@stat.local",
+    },
+    update: {
+      fullName: "Оператор Москва",
+      passwordHash: operatorPasswordHash,
+      isActive: true,
+    },
+    create: {
+      email: process.env.DEMO_OPERATOR_EMAIL ?? "operator@stat.local",
+      fullName: "Оператор Москва",
+      passwordHash: operatorPasswordHash,
+      isActive: true,
+    },
+  });
+
+  await prisma.userMembership.upsert({
+    where: {
+      userId_organizationId_role: {
+        userId: regionAdmin.id,
+        organizationId: regionCenter.id,
+        role: RoleType.REGION_ADMIN,
+      },
+    },
+    update: {},
+    create: {
+      userId: regionAdmin.id,
+      organizationId: regionCenter.id,
+      role: RoleType.REGION_ADMIN,
+    },
+  });
+
+  await prisma.userMembership.upsert({
+    where: {
+      userId_organizationId_role: {
+        userId: operator.id,
+        organizationId: demoFacility.id,
+        role: RoleType.OPERATOR,
+      },
+    },
+    update: {},
+    create: {
+      userId: operator.id,
+      organizationId: demoFacility.id,
+      role: RoleType.OPERATOR,
+    },
+  });
+
+  const reportingYear2024 = await prisma.reportingYear.findUnique({
+    where: { year: 2024 },
+  });
+
+  if (!reportingYear2024) {
+    return;
+  }
+
+  const publishedVersions2024 = await prisma.formTemplateVersion.findMany({
+    where: {
+      reportingYearId: reportingYear2024.id,
+      versionStatus: FormTemplateVersionStatus.PUBLISHED,
+    },
+  });
+
+  for (const version of publishedVersions2024) {
+    const regionAssignment = await prisma.formAssignment.upsert({
+      where: {
+        templateVersionId_reportingYearId_regionId_organizationId: {
+          templateVersionId: version.id,
+          reportingYearId: reportingYear2024.id,
+          regionId: region.id,
+          organizationId: regionCenter.id,
+        },
+      },
+      update: {
+        status: FormAssignmentStatus.PUBLISHED,
+      },
+      create: {
+        templateVersionId: version.id,
+        reportingYearId: reportingYear2024.id,
+        regionId: region.id,
+        organizationId: regionCenter.id,
+        status: FormAssignmentStatus.PUBLISHED,
+      },
+    });
+
+    await prisma.formAssignment.upsert({
+      where: {
+        templateVersionId_reportingYearId_regionId_organizationId: {
+          templateVersionId: version.id,
+          reportingYearId: reportingYear2024.id,
+          regionId: region.id,
+          organizationId: demoFacility.id,
+        },
+      },
+      update: {
+        status: FormAssignmentStatus.PUBLISHED,
+      },
+      create: {
+        templateVersionId: version.id,
+        reportingYearId: reportingYear2024.id,
+        regionId: region.id,
+        organizationId: demoFacility.id,
+        status: FormAssignmentStatus.PUBLISHED,
+      },
+    });
+
+    const existingRegionSubmission = await prisma.submission.findFirst({
+      where: {
+        assignmentId: regionAssignment.id,
+        organizationId: regionCenter.id,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    if (!existingRegionSubmission) {
+      await prisma.submission.create({
+        data: {
+          assignmentId: regionAssignment.id,
+          organizationId: regionCenter.id,
+          status: SubmissionStatus.DRAFT,
+        },
+      });
+    }
+  }
+}
+
 async function main() {
   await seedRegions();
   await seedReportingYears();
   await seedFormTypes();
   await seedFormTemplates();
   await seedSuperadmin();
+  await seedDemoAccessAndAssignments();
 
   console.log(`Seed complete: ${regions.length} regions, ${reportingYears.length} reporting years, ${formTypes.length} form types.`);
 }

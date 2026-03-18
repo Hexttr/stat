@@ -5,6 +5,7 @@ import {
   createFormAssignmentForAllRegionsAction,
   createFormTemplateAction,
   createFormVersionAction,
+  importLegacyFormVersionAction,
   createOperatorFormAssignmentAction,
   createOperatorFormAssignmentsForAllAction,
   duplicateFormVersionAction,
@@ -336,6 +337,98 @@ export default async function AdminFormsPage({
                   className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
                 >
                   Создать draft-версию
+                </button>
+              </div>
+            </form>
+
+            <form
+              action={importLegacyFormVersionAction}
+              className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-6 xl:col-span-2"
+            >
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">
+                    Импорт структуры из архива 2024
+                  </p>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-950">
+                    Реальные формы `F12`, `F14`, `F19`, `F30`
+                  </h3>
+                  <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                    Создает черновую draft-версию из реальных `.doc` файлов в локальной
+                    папке `forms/2024_F12|F14|F19|F30`. Это bootstrap-инструмент для
+                    старта структуры: после импорта откройте grid-редактор, проверьте
+                    строки, графы и служебные колонки, затем сохраните и публикуйте.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-3">
+                <div className="space-y-2">
+                  <label
+                    className="text-sm font-medium text-slate-700"
+                    htmlFor="legacyImportFormTypeId"
+                  >
+                    Тип формы
+                  </label>
+                  <select
+                    id="legacyImportFormTypeId"
+                    name="formTypeId"
+                    defaultValue={formTypes.find((type) => ["F12", "F14", "F19", "F30"].includes(type.code))?.id}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    {formTypes
+                      .filter((type) => ["F12", "F14", "F19", "F30"].includes(type.code))
+                      .map((formType) => (
+                        <option key={formType.id} value={formType.id}>
+                          {formType.code} — {formType.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label
+                    className="text-sm font-medium text-slate-700"
+                    htmlFor="legacyImportReportingYearId"
+                  >
+                    Отчетный год
+                  </label>
+                  <select
+                    id="legacyImportReportingYearId"
+                    name="reportingYearId"
+                    defaultValue={reportingYears.find((year) => year.year === 2024)?.id ?? reportingYears[0]?.id}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    {reportingYears.map((reportingYear) => (
+                      <option key={reportingYear.id} value={reportingYear.id}>
+                        {reportingYear.year}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label
+                    className="text-sm font-medium text-slate-700"
+                    htmlFor="legacyImportTitle"
+                  >
+                    Название версии
+                  </label>
+                  <input
+                    id="legacyImportTitle"
+                    name="title"
+                    defaultValue="Архивная структура 2024"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                >
+                  Создать черновик из `.doc`
                 </button>
               </div>
             </form>
