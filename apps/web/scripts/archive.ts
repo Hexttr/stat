@@ -3,6 +3,7 @@ import "dotenv/config";
 import {
   applyArchiveF12PilotMapping,
   createArchivePilotRegionSubmissions,
+  enrichArchiveF12Structure,
   ensureArchiveYearlyFormVersions,
   importArchiveRawValuesToStaging,
   importHandoffArchiveRegistry,
@@ -72,9 +73,20 @@ async function main() {
       console.log(JSON.stringify(result, null, 2));
       break;
     }
+    case "enrich-f12": {
+      const yearRaw = getArgValue("--year");
+      const versionId = getArgValue("--version-id") ?? undefined;
+
+      const result = await enrichArchiveF12Structure({
+        year: yearRaw ? Number(yearRaw) : undefined,
+        versionId,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
     default:
       throw new Error(
-        "Неизвестная команда. Используйте: sync-regions | import-registry | prepare-forms | pilot | pull-values | map-f12",
+        "Неизвестная команда. Используйте: sync-regions | import-registry | prepare-forms | pilot | pull-values | map-f12 | enrich-f12",
       );
   }
 }

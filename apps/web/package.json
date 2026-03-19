@@ -16,7 +16,8 @@
     "archive:prepare-forms": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts prepare-forms",
     "archive:pilot": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pilot",
     "archive:pull-values": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pull-values",
-    "archive:map-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f12"
+    "archive:map-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f12",
+    "archive:enrich-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f12"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
