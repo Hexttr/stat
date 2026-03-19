@@ -4,7 +4,7 @@ import "./globals.css";
 
 const redHat = Red_Hat_Display({
   variable: "--font-red-hat",
-  subsets: ["latin", "cyrillic"],
+  subsets: ["latin", "latin-ext"],
 });
 
 const geistMono = Geist_Mono({

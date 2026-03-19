@@ -100,7 +100,10 @@ function getRouteStatusClasses(status: SubmissionStatus | null) {
 
 type RouteGroupKey = "assigned" | "working" | "review" | "accepted";
 
-function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
+function getRouteGroupKey(
+  status: SubmissionStatus | null,
+  isSuperadmin: boolean,
+): RouteGroupKey {
   switch (status) {
     case SubmissionStatus.DRAFT:
       return "working";
@@ -110,6 +113,7 @@ function getRouteGroupKey(status: SubmissionStatus | null): RouteGroupKey {
     case SubmissionStatus.REJECTED:
       return "review";
     case SubmissionStatus.APPROVED_BY_REGION:
+      return isSuperadmin ? "review" : "accepted";
     case SubmissionStatus.APPROVED_BY_SUPERADMIN:
       return "accepted";
     default:
@@ -339,17 +343,37 @@ export default async function AdminFormsPage({
   const formsPageQuery = `tab=${selectedCreateTab}&catalog=${selectedCatalogTypeCode ?? ""}&routes=${selectedRouteTab}&routeYear=${selectedRouteYear}`;
   const routeItems = assignments.map((assignment) => {
     const submission = assignment.submissions[0] ?? null;
-    const routeGroup = getRouteGroupKey(submission?.status ?? null);
+    const routeGroup = getRouteGroupKey(submission?.status ?? null, isSuperadmin);
     const direction =
       assignment.organization.type === OrganizationType.REGION_CENTER
         ? "Федеральный центр -> Регион"
         : "Регион -> Оператор";
+    const actionHref =
+      assignment.organization.type === OrganizationType.REGION_CENTER
+        ? isSuperadmin
+          ? submission
+            ? `/admin/forms/review/${submission.id}`
+            : null
+          : `/admin/forms/assignments/${assignment.id}`
+        : submission
+          ? `/admin/forms/review/${submission.id}`
+          : null;
+    const actionLabel =
+      assignment.organization.type === OrganizationType.REGION_CENTER
+        ? isSuperadmin
+          ? "Проверить"
+          : submission
+            ? "Открыть"
+            : "Заполнить"
+        : "Открыть";
 
     return {
       assignment,
       submission,
       routeGroup,
       direction,
+      actionHref,
+      actionLabel,
       statusLabel: submission
         ? formatSubmissionStatus(submission.status)
         : formatAssignmentStatus(assignment.status),
@@ -1206,7 +1230,7 @@ export default async function AdminFormsPage({
                 </div>
               ) : (
                 <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                  <div className="grid grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <div className="grid grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px_120px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                     <div className="px-4 py-3">Форма</div>
                     <div className="px-4 py-3">Название</div>
                     <div className="px-4 py-3">Регион</div>
@@ -1214,12 +1238,14 @@ export default async function AdminFormsPage({
                     <div className="px-4 py-3">Маршрут</div>
                     <div className="px-4 py-3">Срок</div>
                     <div className="px-4 py-3">Статус</div>
+                    <div className="px-4 py-3">Действие</div>
                   </div>
                   <div className="divide-y divide-slate-200">
-                  {activeRouteGroup.items.map(({ assignment, submission, direction, statusLabel }) => (
+                  {activeRouteGroup.items.map(
+                    ({ assignment, submission, direction, statusLabel, actionHref, actionLabel }) => (
                     <div
                       key={assignment.id}
-                      className="grid items-center grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px] gap-0"
+                      className="grid items-center grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px_120px] gap-0"
                     >
                       <div className="px-4 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f67ab]">
                         {assignment.templateVersion.template.formType.code}
@@ -1251,6 +1277,18 @@ export default async function AdminFormsPage({
                         >
                           {statusLabel}
                         </span>
+                      </div>
+                      <div className="px-4 py-3">
+                        {actionHref ? (
+                          <Link
+                            href={actionHref}
+                            className="inline-flex rounded-2xl bg-[#1f67ab] px-3 py-2 text-xs font-medium text-white transition hover:bg-[#185993]"
+                          >
+                            {actionLabel}
+                          </Link>
+                        ) : (
+                          <span className="text-xs text-slate-400">Нет отправки</span>
+                        )}
                       </div>
                     </div>
                   ))}

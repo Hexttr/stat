@@ -43,6 +43,7 @@ export default async function AdminLayout({
             </p>
             <nav className="mt-3 space-y-2">
               <NavLink href="/admin/forms">Формы</NavLink>
+              {isSuperadmin ? <NavLink href="/admin/archive">Архив</NavLink> : null}
               {isSuperadmin || isRegionAdmin ? <NavLink href="/admin/operators">Операторы</NavLink> : null}
               {isSuperadmin ? <NavLink href="/admin/users">Пользователи</NavLink> : null}
             </nav>

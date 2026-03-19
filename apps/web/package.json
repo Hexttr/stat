@@ -10,7 +10,13 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "archive:sync-regions": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts sync-regions",
+    "archive:import-registry": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts import-registry",
+    "archive:prepare-forms": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts prepare-forms",
+    "archive:pilot": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pilot",
+    "archive:pull-values": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pull-values",
+    "archive:map-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f12"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -10,6 +10,7 @@ import {
   RoleType,
   SubmissionStatus,
 } from "../src/generated/prisma/client";
+import { syncCanonicalRegionsFromHandoff } from "../src/lib/archive/service";
 import { projectSchemaToFields } from "../src/lib/form-builder/projection";
 import { FormBuilderSchema } from "../src/lib/form-builder/schema";
 
@@ -193,6 +194,8 @@ async function seedRegions() {
       },
     });
   }
+
+  await syncCanonicalRegionsFromHandoff();
 }
 
 async function seedReportingYears() {

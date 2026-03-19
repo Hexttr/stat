@@ -10,12 +10,26 @@ import {
   FormTemplateVersionStatus,
   OrganizationType,
   RoleType,
+  SubmissionStatus,
 } from "@/generated/prisma/client";
 import {
   getAdminScope,
   requireAdminUser,
   requireSuperadmin,
 } from "@/lib/access";
+import {
+  applyArchiveF12PilotMapping,
+  createArchivePilotRegionSubmissions,
+  ensureArchiveYearlyFormVersions,
+  importArchiveRawValuesToStaging,
+  importHandoffArchiveRegistry,
+  syncCanonicalRegionsFromHandoff,
+} from "@/lib/archive/service";
+import {
+  normalizeRuntimeValue,
+  RuntimeValueMap,
+  validateRuntimeValues,
+} from "@/lib/form-builder/runtime";
 import {
   createDefaultFormSchema,
   duplicateFormSchema,
@@ -132,6 +146,69 @@ const createOperatorFormAssignmentsForAllSchema = z.object({
   regionAssignmentId: z.string().min(1, "Выберите форму, назначенную региону."),
   dueDate: z.string().optional(),
 });
+
+const regionSubmissionPayloadSchema = z.object({
+  assignmentId: z.string().min(1, "Не найдено назначение формы региону."),
+  valuesJson: z.string().min(2, "Пустые данные формы."),
+});
+
+const archivePilotImportSchema = z.object({
+  formCode: z.string().trim().min(1, "Укажите код формы."),
+  year: z.coerce.number().int().min(2019).max(2026),
+});
+
+const archiveValueImportSchema = z.object({
+  formCode: z.string().trim().min(1, "Укажите код формы."),
+  year: z.coerce.number().int().min(2019).max(2026),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+const archiveMappingSchema = z.object({
+  year: z.coerce.number().int().min(2019).max(2026),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+const archiveReturnToSchema = z.object({
+  returnTo: z.string().trim().optional(),
+});
+
+const reviewSubmissionSchema = z.object({
+  submissionId: z.string().min(1, "Не найдена отправка формы."),
+  decision: z.enum([
+    "start_review",
+    "request_changes",
+    "approve_region",
+    "approve_superadmin",
+    "reject",
+  ]),
+  reviewComment: z.string().trim().max(2000, "Комментарий слишком длинный.").optional(),
+  returnTo: z.string().trim().optional(),
+});
+
+function appendSearchParam(url: string, param: string) {
+  const [base, hash] = url.split("#");
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}${param}${hash ? `#${hash}` : ""}`;
+}
+
+function parseRuntimeValues(rawJson: string) {
+  const rawPayload = JSON.parse(rawJson) as Record<string, unknown>;
+
+  return Object.fromEntries(
+    Object.entries(rawPayload).map(([key, value]) => {
+      if (
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        value === null
+      ) {
+        return [key, value];
+      }
+
+      return [key, ""];
+    }),
+  ) satisfies RuntimeValueMap;
+}
 
 async function getScopedOperator(currentUserId: string, operatorId: string) {
   const currentUser = await requireAdminUser();
@@ -374,6 +451,204 @@ async function getScopedRegionAssignment(regionAssignmentId: string) {
   }
 
   return { currentUser, scope, assignment };
+}
+
+async function getScopedRegionInputAssignment(assignmentId: string) {
+  const currentUser = await requireAdminUser();
+  const scope = getAdminScope(currentUser);
+
+  const assignment = await prisma.formAssignment.findFirst({
+    where: {
+      id: assignmentId,
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      region: scope.isSuperadmin
+        ? {
+            code: {
+              not: "RUSSIAN_FEDERATION",
+            },
+          }
+        : {
+            id: {
+              in: scope.manageableRegionIds ?? [],
+            },
+          },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          fields: true,
+          template: {
+            include: {
+              formType: true,
+            },
+          },
+          reportingYear: true,
+        },
+      },
+      organization: true,
+      region: true,
+      reportingYear: true,
+    },
+  });
+
+  if (!assignment) {
+    redirect("/admin/forms?error=Назначение формы региону не найдено или недоступно.");
+  }
+
+  return { currentUser, scope, assignment };
+}
+
+async function persistRegionSubmission(params: {
+  assignmentId: string;
+  values: RuntimeValueMap;
+  status: SubmissionStatus;
+  submittedById?: string | null;
+}) {
+  const { currentUser, assignment } = await getScopedRegionInputAssignment(params.assignmentId);
+  formBuilderSchema.parse(assignment.templateVersion.schemaJson);
+
+  const fieldMap = new Map(assignment.templateVersion.fields.map((field) => [field.key, field]));
+  const normalizedEntries = Object.entries(params.values)
+    .map(([fieldKey, rawValue]) => {
+      const field = fieldMap.get(fieldKey);
+      if (!field) {
+        return null;
+      }
+
+      const normalizedValue = normalizeRuntimeValue(field.fieldType, rawValue);
+      if (normalizedValue.isEmpty) {
+        return null;
+      }
+
+      return {
+        fieldId: field.id,
+        ...normalizedValue,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  const existingSubmission = await prisma.submission.findFirst({
+    where: {
+      assignmentId: assignment.id,
+      organizationId: assignment.organizationId,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  const submission = existingSubmission
+    ? await prisma.submission.update({
+        where: {
+          id: existingSubmission.id,
+        },
+        data: {
+          status: params.status,
+          submittedById:
+            params.status === SubmissionStatus.SUBMITTED
+              ? params.submittedById ?? currentUser.id
+              : undefined,
+          submittedAt: params.status === SubmissionStatus.SUBMITTED ? new Date() : null,
+        },
+      })
+    : await prisma.submission.create({
+        data: {
+          assignmentId: assignment.id,
+          organizationId: assignment.organizationId,
+          status: params.status,
+          submittedById:
+            params.status === SubmissionStatus.SUBMITTED
+              ? params.submittedById ?? currentUser.id
+              : null,
+          submittedAt: params.status === SubmissionStatus.SUBMITTED ? new Date() : null,
+        },
+      });
+
+  await prisma.$transaction([
+    prisma.submissionValue.deleteMany({
+      where: {
+        submissionId: submission.id,
+      },
+    }),
+    ...(normalizedEntries.length > 0
+      ? [
+          prisma.submissionValue.createMany({
+            data: normalizedEntries.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueBoolean: entry.valueBoolean ?? undefined,
+              valueJson: entry.valueJson ?? undefined,
+            })),
+          }),
+        ]
+      : []),
+  ]);
+}
+
+async function getScopedSubmissionForReview(submissionId: string) {
+  const currentUser = await requireAdminUser();
+  const scope = getAdminScope(currentUser);
+
+  const submission = await prisma.submission.findFirst({
+    where: {
+      id: submissionId,
+      assignment: scope.isSuperadmin
+        ? undefined
+        : {
+            regionId: {
+              in: scope.manageableRegionIds ?? [],
+            },
+          },
+    },
+    include: {
+      assignment: {
+        include: {
+          region: true,
+          organization: true,
+          templateVersion: {
+            include: {
+              template: {
+                include: {
+                  formType: true,
+                },
+              },
+              reportingYear: true,
+              fields: true,
+            },
+          },
+        },
+      },
+      organization: true,
+      submittedBy: true,
+      reviewedBy: true,
+      values: true,
+    },
+  });
+
+  if (!submission) {
+    redirect("/admin/forms?error=Отправка формы не найдена или недоступна.");
+  }
+
+  if (!scope.isSuperadmin && submission.assignment.organization.type !== OrganizationType.MEDICAL_FACILITY) {
+    redirect("/admin/forms?error=Региональный администратор может проверять только формы операторов.");
+  }
+
+  if (
+    scope.isSuperadmin &&
+    submission.assignment.organization.type !== OrganizationType.REGION_CENTER &&
+    submission.status !== SubmissionStatus.APPROVED_BY_REGION &&
+    submission.status !== SubmissionStatus.IN_REVIEW &&
+    submission.status !== SubmissionStatus.CHANGES_REQUESTED &&
+    submission.status !== SubmissionStatus.REJECTED
+  ) {
+    redirect("/admin/forms?error=Эта отправка пока недоступна для проверки на федеральном уровне.");
+  }
+
+  return { currentUser, scope, submission };
 }
 
 export async function createUserAction(formData: FormData) {
@@ -1046,7 +1321,7 @@ export async function duplicateFormVersionAction(formData: FormData) {
 export async function deleteFormVersionAction(formData: FormData) {
   await requireSuperadmin();
   const rawReturnTo = String(formData.get("returnTo") ?? "/admin/forms");
-  const redirectWithError = (message: string) => {
+  const redirectWithError = (message: string): never => {
     redirect(
       `${rawReturnTo}${rawReturnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`,
     );
@@ -1060,9 +1335,10 @@ export async function deleteFormVersionAction(formData: FormData) {
   if (!parsed.success) {
     redirectWithError(parsed.error.issues[0]?.message ?? "Не удалось удалить версию формы.");
   }
+  const parsedData = parsed.data as z.infer<typeof deleteFormVersionSchema>;
 
   const version = await prisma.formTemplateVersion.findUnique({
-    where: { id: parsed.data.versionId },
+    where: { id: parsedData.versionId },
     include: {
       assignments: {
         select: {
@@ -1076,8 +1352,9 @@ export async function deleteFormVersionAction(formData: FormData) {
   if (!version) {
     redirectWithError("Версия формы не найдена.");
   }
+  const existingVersion = version!;
 
-  if (version.assignments.length > 0) {
+  if (existingVersion.assignments.length > 0) {
     redirectWithError(
       "Версию нельзя удалить, пока она используется в маршрутах или назначениях.",
     );
@@ -1085,16 +1362,16 @@ export async function deleteFormVersionAction(formData: FormData) {
 
   await prisma.$transaction(async (tx) => {
     await tx.formField.deleteMany({
-      where: { templateVersionId: version.id },
+      where: { templateVersionId: existingVersion.id },
     });
 
     await tx.formTemplateVersion.delete({
-      where: { id: version.id },
+      where: { id: existingVersion.id },
     });
   });
 
   revalidatePath("/admin/forms");
-  redirect(parsed.data.returnTo || "/admin/forms");
+  redirect(parsedData.returnTo || "/admin/forms");
 }
 
 export async function saveFormVersionDraftAction(formData: FormData) {
@@ -1434,4 +1711,281 @@ export async function createOperatorFormAssignmentsForAllAction(formData: FormDa
       `${createdAssignments.length}|${assignment.templateVersion.template.formType.name}|${assignment.templateVersion.reportingYear.year}|operators`,
     )}`,
   );
+}
+
+export async function saveRegionSubmissionDraftAction(formData: FormData) {
+  const parsed = regionSubmissionPayloadSchema.parse({
+    assignmentId: formData.get("assignmentId"),
+    valuesJson: formData.get("valuesJson"),
+  });
+
+  const values = parseRuntimeValues(parsed.valuesJson);
+
+  await persistRegionSubmission({
+    assignmentId: parsed.assignmentId,
+    values,
+    status: SubmissionStatus.DRAFT,
+  });
+
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/assignments/${parsed.assignmentId}`);
+  redirect(`/admin/forms/assignments/${parsed.assignmentId}?saved=1`);
+}
+
+export async function submitRegionSubmissionAction(formData: FormData) {
+  const parsed = regionSubmissionPayloadSchema.parse({
+    assignmentId: formData.get("assignmentId"),
+    valuesJson: formData.get("valuesJson"),
+  });
+
+  const { currentUser, assignment } = await getScopedRegionInputAssignment(parsed.assignmentId);
+  const schema = formBuilderSchema.parse(assignment.templateVersion.schemaJson);
+  const values = parseRuntimeValues(parsed.valuesJson);
+  const validationErrors = validateRuntimeValues(schema, values);
+
+  if (Object.keys(validationErrors).length > 0) {
+    redirect(
+      `/admin/forms/assignments/${parsed.assignmentId}?error=${encodeURIComponent(
+        "Заполните обязательные поля и исправьте ошибки перед отправкой региона.",
+      )}`,
+    );
+  }
+
+  await persistRegionSubmission({
+    assignmentId: parsed.assignmentId,
+    values,
+    status: SubmissionStatus.SUBMITTED,
+    submittedById: currentUser.id,
+  });
+
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/assignments/${parsed.assignmentId}`);
+  redirect(`/admin/forms/assignments/${parsed.assignmentId}?submitted=1`);
+}
+
+export async function syncCanonicalRegionsAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveReturnToSchema.parse({
+    returnTo: formData.get("returnTo"),
+  });
+
+  const result = await syncCanonicalRegionsFromHandoff();
+  revalidatePath("/admin/archive");
+  revalidatePath("/admin/forms");
+  revalidatePath("/admin/operators");
+
+  redirect(
+    `${parsed.returnTo || "/admin/archive"}?synced=${encodeURIComponent(
+      `${result.totalSubjects}|${result.reusedRegions}|${result.createdRegions}|${result.createdRegionCenters}`,
+    )}`,
+  );
+}
+
+export async function importHandoffArchiveRegistryAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveReturnToSchema.parse({
+    returnTo: formData.get("returnTo"),
+  });
+
+  const result = await importHandoffArchiveRegistry();
+  revalidatePath("/admin/archive");
+
+  redirect(
+    `${parsed.returnTo || "/admin/archive"}?registryImported=${encodeURIComponent(
+      `${result.totalEntries}|${result.createdFiles}|${result.updatedFiles}|${result.matchedSubjects}|${result.unmatchedSubjects}`,
+    )}`,
+  );
+}
+
+export async function ensureArchiveYearlyFormsAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveReturnToSchema.parse({
+    returnTo: formData.get("returnTo"),
+  });
+
+  const result = await ensureArchiveYearlyFormVersions();
+  revalidatePath("/admin/archive");
+  revalidatePath("/admin/forms");
+
+  redirect(
+    `${parsed.returnTo || "/admin/archive"}?yearlyFormsReady=${encodeURIComponent(
+      `${result.targetYears}|${result.createdTemplates}|${result.createdVersions}`,
+    )}`,
+  );
+}
+
+export async function runArchivePilotImportAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archivePilotImportSchema.parse({
+    formCode: formData.get("formCode"),
+    year: formData.get("year"),
+  });
+
+  const result = await createArchivePilotRegionSubmissions(parsed);
+  revalidatePath("/admin/archive");
+  revalidatePath("/admin/forms");
+
+  redirect(
+    `/admin/archive?pilotImported=${encodeURIComponent(
+      `${result.formCode}|${result.year}|${result.candidateFiles}|${result.createdAssignments}|${result.createdSubmissions}|${result.skippedWithoutRegionCenter}`,
+    )}`,
+  );
+}
+
+export async function importArchiveRawValuesAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveValueImportSchema.parse({
+    formCode: formData.get("formCode"),
+    year: formData.get("year"),
+    limit: formData.get("limit") || undefined,
+  });
+
+  try {
+    const result = await importArchiveRawValuesToStaging(parsed);
+    revalidatePath("/admin/archive");
+
+    redirect(
+      `/admin/archive?valuesImported=${encodeURIComponent(
+        `${parsed.formCode}|${parsed.year}|${result.selectedFiles}|${result.importedFiles}|${result.totalValues}|${result.missingSemantics}`,
+      )}`,
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Не удалось импортировать raw значения из handoff PostgreSQL.";
+    redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
+  }
+}
+
+export async function applyArchiveF12MappingAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveMappingSchema.parse({
+    year: formData.get("year"),
+    limit: formData.get("limit") || undefined,
+  });
+
+  try {
+    const result = await applyArchiveF12PilotMapping(parsed);
+    revalidatePath("/admin/archive");
+    revalidatePath("/admin/forms");
+
+    redirect(
+      `/admin/archive?mappingApplied=${encodeURIComponent(
+        `${parsed.year}|${result.selectedFiles}|${result.mappedSubmissions}|${result.mappedValues}|${result.unmatchedValues}`,
+      )}`,
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Не удалось применить pilot mapping F12 к региональным черновикам.";
+    redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
+  }
+}
+
+export async function reviewSubmissionAction(formData: FormData) {
+  const parsed = reviewSubmissionSchema.safeParse({
+    submissionId: formData.get("submissionId"),
+    decision: formData.get("decision"),
+    reviewComment: formData.get("reviewComment"),
+    returnTo: formData.get("returnTo"),
+  });
+
+  if (!parsed.success) {
+    redirect(
+      `/admin/forms?error=${encodeURIComponent(
+        parsed.error.issues[0]?.message ?? "Не удалось обработать решение по форме.",
+      )}`,
+    );
+  }
+
+  const returnTo =
+    parsed.data.returnTo && parsed.data.returnTo.startsWith("/")
+      ? parsed.data.returnTo
+      : `/admin/forms/review/${parsed.data.submissionId}`;
+  const normalizedComment = parsed.data.reviewComment?.trim() || null;
+
+  if (
+    (parsed.data.decision === "request_changes" || parsed.data.decision === "reject") &&
+    !normalizedComment
+  ) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Для возврата или отклонения нужен комментарий.")}`,
+      ),
+    );
+  }
+
+  const { currentUser, scope, submission } = await getScopedSubmissionForReview(
+    parsed.data.submissionId,
+  );
+  const isSuperadmin = scope.isSuperadmin;
+  const nextStatusByDecision: Record<
+    z.infer<typeof reviewSubmissionSchema>["decision"],
+    SubmissionStatus
+  > = {
+    start_review: SubmissionStatus.IN_REVIEW,
+    request_changes: SubmissionStatus.CHANGES_REQUESTED,
+    approve_region: SubmissionStatus.APPROVED_BY_REGION,
+    approve_superadmin: SubmissionStatus.APPROVED_BY_SUPERADMIN,
+    reject: SubmissionStatus.REJECTED,
+  };
+
+  if (isSuperadmin && parsed.data.decision === "approve_region") {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Федеральный уровень не может выполнить региональное согласование.")}`,
+      ),
+    );
+  }
+
+  if (!isSuperadmin && parsed.data.decision === "approve_superadmin") {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Региональный администратор не может выполнить федеральное согласование.")}`,
+      ),
+    );
+  }
+
+  if (
+    submission.status === SubmissionStatus.APPROVED_BY_SUPERADMIN &&
+    parsed.data.decision !== "approve_superadmin"
+  ) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Форма уже принята федеральным уровнем и больше не требует действий.")}`,
+      ),
+    );
+  }
+
+  const nextStatus = nextStatusByDecision[parsed.data.decision];
+
+  await prisma.submission.update({
+    where: { id: submission.id },
+    data: {
+      status: nextStatus,
+      reviewComment: normalizedComment,
+      reviewedAt: new Date(),
+      reviewedById: currentUser.id,
+    },
+  });
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/review/${submission.id}`);
+  revalidatePath("/operator");
+  revalidatePath(`/operator/assignments/${submission.assignmentId}`);
+
+  redirect(appendSearchParam(returnTo, "updated=1"));
 }
