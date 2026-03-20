@@ -348,6 +348,33 @@ function createNextRowKey(sampleRowKey: string | null | undefined, nextIndex: nu
   return `${match[1]}${nextIndex}`;
 }
 
+function createArchiveTableId(formCode: string, tableCode: string) {
+  return `table_${formCode.toLowerCase()}_${tableCode.toLowerCase()}`;
+}
+
+function cleanArchiveTableTitle(value: string | null | undefined, tableCode: string) {
+  const cleaned = (value ?? "")
+    .replace(/\(\d{3,4}\)\s*продолжение/giu, "")
+    .replace(/\(\d{3,4}\)/giu, "")
+    .replace(/Код\s+по\s+ОКЕИ.*$/giu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return cleaned || `Архивный блок ${tableCode}`;
+}
+
+function createGenericArchiveColumnLabel(
+  rawColumnLabel: string | null | undefined,
+  rawColumnNumber: string,
+) {
+  const cleaned = cleanArchiveSemanticLabel(rawColumnLabel);
+  if (cleaned && !/^\d+$/u.test(cleaned)) {
+    return cleaned;
+  }
+
+  return `Графа ${normalizeArchiveText(rawColumnNumber) || rawColumnNumber}`;
+}
+
 type F12ManualRowSplit = {
   tableIds: string[];
   anchorPrintedNo: string;
@@ -1396,6 +1423,7 @@ export async function importArchiveRawValuesToStaging(params?: {
   formCode?: string;
   year?: number;
   limit?: number;
+  offset?: number;
 }) {
   const files = await prisma.importFile.findMany({
     where: {
@@ -1425,6 +1453,7 @@ export async function importArchiveRawValuesToStaging(params?: {
         storagePath: "asc",
       },
     ],
+    skip: params?.offset ?? undefined,
     take: params?.limit ?? undefined,
   });
 
@@ -1960,9 +1989,757 @@ export async function enrichArchiveF12Structure(params?: {
   };
 }
 
+export async function enrichArchiveF14Structure(params?: {
+  year?: number;
+  versionId?: string;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const targetVersion =
+    params?.versionId ??
+    (
+      await prisma.formTemplateVersion.findFirst({
+        where: {
+          template: {
+            formType: {
+              code: "F14",
+            },
+          },
+          reportingYear: {
+            year: targetYear,
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      })
+    )?.id ??
+    null;
+
+  if (!targetVersion) {
+    throw new Error(`Не найдена архивная версия F14 за ${targetYear}.`);
+  }
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: {
+      id: targetVersion,
+    },
+  });
+
+  if (!version) {
+    throw new Error(`Версия шаблона ${targetVersion} не найдена.`);
+  }
+
+  const semanticCells = await prisma.$queryRaw<
+    Array<{
+      table_code: string;
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >`
+    select
+      table_code,
+      max(table_title) as table_title,
+      row_no,
+      max(row_label) as row_label,
+      col_no,
+      max(col_label) as col_label
+    from statforms.semantic_passports_final_v2
+    where form = 'F14'
+      and year = ${targetYear}
+      and table_code not in ('0001', '0002')
+    group by table_code, row_no, col_no
+    order by table_code, row_no::int, col_no::int
+  `;
+
+  const byTableCode = new Map<
+    string,
+    Array<{
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >();
+  for (const cell of semanticCells) {
+    const entries = byTableCode.get(cell.table_code) ?? [];
+    entries.push({
+      table_title: cell.table_title,
+      row_no: cell.row_no,
+      row_label: cell.row_label,
+      col_no: cell.col_no,
+      col_label: cell.col_label,
+    });
+    byTableCode.set(cell.table_code, entries);
+  }
+
+  const schema = parseAndNormalizeFormSchema(version.schemaJson);
+  schema.tables = Array.from(byTableCode.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([tableCode, cells]) => {
+      const sortedCells = cells.sort(
+        (left, right) =>
+          Number(left.row_no) - Number(right.row_no) || Number(left.col_no) - Number(right.col_no),
+      );
+      const uniqueRows = Array.from(
+        new Map(sortedCells.map((cell) => [cell.row_no, cell])).values(),
+      ).sort((left, right) => Number(left.row_no) - Number(right.row_no));
+      const uniqueColumns = Array.from(
+        new Map(sortedCells.map((cell) => [cell.col_no, cell])).values(),
+      ).sort((left, right) => Number(left.col_no) - Number(right.col_no));
+
+      const descriptorColumns = [
+        {
+          id: `descriptor_${tableCode}_1`,
+          key: `printed_row_${tableCode}`,
+          label: "№ строки",
+          width: 120,
+          sticky: false,
+        },
+        {
+          id: `descriptor_${tableCode}_2`,
+          key: `code_${tableCode}`,
+          label: "Код",
+          width: 180,
+          sticky: false,
+        },
+      ];
+
+      const rows = uniqueRows.map((row, rowIndex) => {
+        const rowLabel = cleanArchiveSemanticLabel(row.row_label) || `Строка ${row.row_no}`;
+        return {
+          id: `row_${tableCode}_${rowIndex + 1}`,
+          key: `archive_f14_${tableCode}_row_${rowIndex + 1}`,
+          label: rowLabel,
+          description: null,
+          rowType: "data" as const,
+          indent: 0,
+          groupPrefix: null,
+          descriptorValues: {
+            [descriptorColumns[0].id]: normalizeArchiveText(row.row_no) || row.row_no,
+            [descriptorColumns[1].id]: rowLabel,
+          },
+        };
+      });
+
+      const columns = uniqueColumns.map((column, columnIndex) => ({
+        id: `column_${tableCode}_${columnIndex + 1}`,
+        key: `value_${columnIndex + 1}_${tableCode}`,
+        label: createGenericArchiveColumnLabel(column.col_label, column.col_no),
+        fieldType: "number" as const,
+        unit: "шт.",
+        required: false,
+        width: 220,
+        sticky: false,
+        placeholder: null,
+        helpText: null,
+        options: [],
+        validation: {},
+      }));
+
+      return {
+        id: createArchiveTableId("F14", tableCode),
+        title: cleanArchiveTableTitle(sortedCells[0]?.table_title, tableCode),
+        description: `Автоматически построено из semantic passport F14 (${tableCode}).`,
+        descriptorColumns,
+        columns,
+        rows,
+        settings: {
+          stickyHeader: true,
+          stickyFirstColumn: true,
+          horizontalScroll: true,
+        },
+      };
+    });
+
+  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const projectedFields = projectSchemaToFields(normalizedSchema);
+  const existingArchiveSubmissionValues = await prisma.submissionValue.count({
+    where: {
+      submission: {
+        assignment: {
+          templateVersionId: version.id,
+        },
+      },
+    },
+  });
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.submissionValue.deleteMany({
+        where: {
+          submission: {
+            assignment: {
+              templateVersionId: version.id,
+            },
+          },
+        },
+      });
+
+      await tx.formTemplateVersion.update({
+        where: {
+          id: version.id,
+        },
+        data: {
+          schemaJson: normalizedSchema,
+        },
+      });
+
+      await tx.formField.deleteMany({
+        where: {
+          templateVersionId: version.id,
+        },
+      });
+
+      for (const fieldChunk of chunkArray(projectedFields, 1000)) {
+        if (fieldChunk.length === 0) {
+          continue;
+        }
+
+        await tx.formField.createMany({
+          data: fieldChunk.map((field) => ({
+            templateVersionId: version.id,
+            key: field.key,
+            label: field.label,
+            section: field.section,
+            tableId: field.tableId,
+            rowId: field.rowId,
+            rowKey: field.rowKey,
+            columnId: field.columnId,
+            columnKey: field.columnKey,
+            fieldPath: field.fieldPath,
+            fieldType: field.fieldType,
+            unit: field.unit,
+            placeholder: field.placeholder,
+            helpText: field.helpText,
+            sortOrder: field.sortOrder,
+            isRequired: field.isRequired,
+            validationJson: field.validationJson ?? undefined,
+          })),
+        });
+      }
+    },
+    {
+      timeout: 60_000,
+    },
+  );
+
+  return {
+    versionId: version.id,
+    year: targetYear,
+    updatedTables: normalizedSchema.tables.map((table) => table.id),
+    addedRows: normalizedSchema.tables.reduce((sum, table) => sum + table.rows.length, 0),
+    addedColumns: normalizedSchema.tables.reduce((sum, table) => sum + table.columns.length, 0),
+    clearedSubmissionValues: existingArchiveSubmissionValues,
+    fieldCount: projectedFields.length,
+  };
+}
+
+export async function enrichArchiveF19Structure(params?: {
+  year?: number;
+  versionId?: string;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const targetVersion =
+    params?.versionId ??
+    (
+      await prisma.formTemplateVersion.findFirst({
+        where: {
+          template: {
+            formType: {
+              code: "F19",
+            },
+          },
+          reportingYear: {
+            year: targetYear,
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      })
+    )?.id ??
+    null;
+
+  if (!targetVersion) {
+    throw new Error(`Не найдена архивная версия F19 за ${targetYear}.`);
+  }
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: {
+      id: targetVersion,
+    },
+  });
+
+  if (!version) {
+    throw new Error(`Версия шаблона ${targetVersion} не найдена.`);
+  }
+
+  const semanticCells = await prisma.$queryRaw<
+    Array<{
+      table_code: string;
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >`
+    select
+      table_code,
+      max(table_title) as table_title,
+      row_no,
+      max(row_label) as row_label,
+      col_no,
+      max(col_label) as col_label
+    from statforms.semantic_passports_final_v2
+    where form = 'F19'
+      and year = ${targetYear}
+      and table_code not in ('0001', '0002')
+    group by table_code, row_no, col_no
+    order by table_code, row_no::int, col_no::int
+  `;
+
+  const byTableCode = new Map<
+    string,
+    Array<{
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >();
+  for (const cell of semanticCells) {
+    const entries = byTableCode.get(cell.table_code) ?? [];
+    entries.push({
+      table_title: cell.table_title,
+      row_no: cell.row_no,
+      row_label: cell.row_label,
+      col_no: cell.col_no,
+      col_label: cell.col_label,
+    });
+    byTableCode.set(cell.table_code, entries);
+  }
+
+  const schema = parseAndNormalizeFormSchema(version.schemaJson);
+  schema.tables = Array.from(byTableCode.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([tableCode, cells]) => {
+      const sortedCells = cells.sort(
+        (left, right) =>
+          Number(left.row_no) - Number(right.row_no) || Number(left.col_no) - Number(right.col_no),
+      );
+      const uniqueRows = Array.from(
+        new Map(sortedCells.map((cell) => [cell.row_no, cell])).values(),
+      ).sort((left, right) => Number(left.row_no) - Number(right.row_no));
+      const uniqueColumns = Array.from(
+        new Map(sortedCells.map((cell) => [cell.col_no, cell])).values(),
+      ).sort((left, right) => Number(left.col_no) - Number(right.col_no));
+
+      const descriptorColumns = [
+        {
+          id: `descriptor_${tableCode}_1`,
+          key: `printed_row_${tableCode}`,
+          label: "№ строки",
+          width: 120,
+          sticky: false,
+        },
+        {
+          id: `descriptor_${tableCode}_2`,
+          key: `code_${tableCode}`,
+          label: "Код",
+          width: 180,
+          sticky: false,
+        },
+      ];
+
+      const rows = uniqueRows.map((row, rowIndex) => {
+        const rowLabel = cleanArchiveSemanticLabel(row.row_label) || `Строка ${row.row_no}`;
+        return {
+          id: `row_${tableCode}_${rowIndex + 1}`,
+          key: `archive_f19_${tableCode}_row_${rowIndex + 1}`,
+          label: rowLabel,
+          description: null,
+          rowType: "data" as const,
+          indent: 0,
+          groupPrefix: null,
+          descriptorValues: {
+            [descriptorColumns[0].id]: normalizeArchiveText(row.row_no) || row.row_no,
+            [descriptorColumns[1].id]: rowLabel,
+          },
+        };
+      });
+
+      const columns = uniqueColumns.map((column, columnIndex) => ({
+        id: `column_${tableCode}_${columnIndex + 1}`,
+        key: `value_${columnIndex + 1}_${tableCode}`,
+        label: createGenericArchiveColumnLabel(column.col_label, column.col_no),
+        fieldType: "number" as const,
+        unit: "шт.",
+        required: false,
+        width: 220,
+        sticky: false,
+        placeholder: null,
+        helpText: null,
+        options: [],
+        validation: {},
+      }));
+
+      return {
+        id: createArchiveTableId("F19", tableCode),
+        title: cleanArchiveTableTitle(sortedCells[0]?.table_title, tableCode),
+        description: `Автоматически построено из semantic passport F19 (${tableCode}).`,
+        descriptorColumns,
+        columns,
+        rows,
+        settings: {
+          stickyHeader: true,
+          stickyFirstColumn: true,
+          horizontalScroll: true,
+        },
+      };
+    });
+
+  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const projectedFields = projectSchemaToFields(normalizedSchema);
+  const existingArchiveSubmissionValues = await prisma.submissionValue.count({
+    where: {
+      submission: {
+        assignment: {
+          templateVersionId: version.id,
+        },
+      },
+    },
+  });
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.submissionValue.deleteMany({
+        where: {
+          submission: {
+            assignment: {
+              templateVersionId: version.id,
+            },
+          },
+        },
+      });
+
+      await tx.formTemplateVersion.update({
+        where: {
+          id: version.id,
+        },
+        data: {
+          schemaJson: normalizedSchema,
+        },
+      });
+
+      await tx.formField.deleteMany({
+        where: {
+          templateVersionId: version.id,
+        },
+      });
+
+      for (const fieldChunk of chunkArray(projectedFields, 1000)) {
+        if (fieldChunk.length === 0) {
+          continue;
+        }
+
+        await tx.formField.createMany({
+          data: fieldChunk.map((field) => ({
+            templateVersionId: version.id,
+            key: field.key,
+            label: field.label,
+            section: field.section,
+            tableId: field.tableId,
+            rowId: field.rowId,
+            rowKey: field.rowKey,
+            columnId: field.columnId,
+            columnKey: field.columnKey,
+            fieldPath: field.fieldPath,
+            fieldType: field.fieldType,
+            unit: field.unit,
+            placeholder: field.placeholder,
+            helpText: field.helpText,
+            sortOrder: field.sortOrder,
+            isRequired: field.isRequired,
+            validationJson: field.validationJson ?? undefined,
+          })),
+        });
+      }
+    },
+    {
+      timeout: 60_000,
+    },
+  );
+
+  return {
+    versionId: version.id,
+    year: targetYear,
+    updatedTables: normalizedSchema.tables.map((table) => table.id),
+    addedRows: normalizedSchema.tables.reduce((sum, table) => sum + table.rows.length, 0),
+    addedColumns: normalizedSchema.tables.reduce((sum, table) => sum + table.columns.length, 0),
+    clearedSubmissionValues: existingArchiveSubmissionValues,
+    fieldCount: projectedFields.length,
+  };
+}
+
+export async function enrichArchiveF30Structure(params?: {
+  year?: number;
+  versionId?: string;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const targetVersion =
+    params?.versionId ??
+    (
+      await prisma.formTemplateVersion.findFirst({
+        where: {
+          template: {
+            formType: {
+              code: "F30",
+            },
+          },
+          reportingYear: {
+            year: targetYear,
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      })
+    )?.id ??
+    null;
+
+  if (!targetVersion) {
+    throw new Error(`Не найдена архивная версия F30 за ${targetYear}.`);
+  }
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: {
+      id: targetVersion,
+    },
+  });
+
+  if (!version) {
+    throw new Error(`Версия шаблона ${targetVersion} не найдена.`);
+  }
+
+  const semanticCells = await prisma.$queryRaw<
+    Array<{
+      table_code: string;
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >`
+    select
+      table_code,
+      max(table_title) as table_title,
+      row_no,
+      max(row_label) as row_label,
+      col_no,
+      max(col_label) as col_label
+    from statforms.semantic_passports_final_v2
+    where form = 'F30'
+      and year = ${targetYear}
+      and table_code not in ('0001', '0002')
+    group by table_code, row_no, col_no
+    order by table_code, row_no::int, col_no::int
+  `;
+
+  const byTableCode = new Map<
+    string,
+    Array<{
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >();
+  for (const cell of semanticCells) {
+    const entries = byTableCode.get(cell.table_code) ?? [];
+    entries.push({
+      table_title: cell.table_title,
+      row_no: cell.row_no,
+      row_label: cell.row_label,
+      col_no: cell.col_no,
+      col_label: cell.col_label,
+    });
+    byTableCode.set(cell.table_code, entries);
+  }
+
+  const schema = parseAndNormalizeFormSchema(version.schemaJson);
+  schema.tables = Array.from(byTableCode.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([tableCode, cells]) => {
+      const sortedCells = cells.sort(
+        (left, right) =>
+          Number(left.row_no) - Number(right.row_no) || Number(left.col_no) - Number(right.col_no),
+      );
+      const uniqueRows = Array.from(
+        new Map(sortedCells.map((cell) => [cell.row_no, cell])).values(),
+      ).sort((left, right) => Number(left.row_no) - Number(right.row_no));
+      const uniqueColumns = Array.from(
+        new Map(sortedCells.map((cell) => [cell.col_no, cell])).values(),
+      ).sort((left, right) => Number(left.col_no) - Number(right.col_no));
+
+      const descriptorColumns = [
+        {
+          id: `descriptor_${tableCode}_1`,
+          key: `printed_row_${tableCode}`,
+          label: "№ строки",
+          width: 120,
+          sticky: false,
+        },
+        {
+          id: `descriptor_${tableCode}_2`,
+          key: `code_${tableCode}`,
+          label: "Код",
+          width: 180,
+          sticky: false,
+        },
+      ];
+
+      const rows = uniqueRows.map((row, rowIndex) => {
+        const rowLabel = cleanArchiveSemanticLabel(row.row_label) || `Строка ${row.row_no}`;
+        return {
+          id: `row_${tableCode}_${rowIndex + 1}`,
+          key: `archive_f30_${tableCode}_row_${rowIndex + 1}`,
+          label: rowLabel,
+          description: null,
+          rowType: "data" as const,
+          indent: 0,
+          groupPrefix: null,
+          descriptorValues: {
+            [descriptorColumns[0].id]: normalizeArchiveText(row.row_no) || row.row_no,
+            [descriptorColumns[1].id]: rowLabel,
+          },
+        };
+      });
+
+      const columns = uniqueColumns.map((column, columnIndex) => ({
+        id: `column_${tableCode}_${columnIndex + 1}`,
+        key: `value_${columnIndex + 1}_${tableCode}`,
+        label: createGenericArchiveColumnLabel(column.col_label, column.col_no),
+        fieldType: "number" as const,
+        unit: "шт.",
+        required: false,
+        width: 220,
+        sticky: false,
+        placeholder: null,
+        helpText: null,
+        options: [],
+        validation: {},
+      }));
+
+      return {
+        id: createArchiveTableId("F30", tableCode),
+        title: cleanArchiveTableTitle(sortedCells[0]?.table_title, tableCode),
+        description: `Автоматически построено из semantic passport F30 (${tableCode}).`,
+        descriptorColumns,
+        columns,
+        rows,
+        settings: {
+          stickyHeader: true,
+          stickyFirstColumn: true,
+          horizontalScroll: true,
+        },
+      };
+    });
+
+  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const projectedFields = projectSchemaToFields(normalizedSchema);
+  const existingArchiveSubmissionValues = await prisma.submissionValue.count({
+    where: {
+      submission: {
+        assignment: {
+          templateVersionId: version.id,
+        },
+      },
+    },
+  });
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.submissionValue.deleteMany({
+        where: {
+          submission: {
+            assignment: {
+              templateVersionId: version.id,
+            },
+          },
+        },
+      });
+
+      await tx.formTemplateVersion.update({
+        where: {
+          id: version.id,
+        },
+        data: {
+          schemaJson: normalizedSchema,
+        },
+      });
+
+      await tx.formField.deleteMany({
+        where: {
+          templateVersionId: version.id,
+        },
+      });
+
+      for (const fieldChunk of chunkArray(projectedFields, 1000)) {
+        if (fieldChunk.length === 0) {
+          continue;
+        }
+
+        await tx.formField.createMany({
+          data: fieldChunk.map((field) => ({
+            templateVersionId: version.id,
+            key: field.key,
+            label: field.label,
+            section: field.section,
+            tableId: field.tableId,
+            rowId: field.rowId,
+            rowKey: field.rowKey,
+            columnId: field.columnId,
+            columnKey: field.columnKey,
+            fieldPath: field.fieldPath,
+            fieldType: field.fieldType,
+            unit: field.unit,
+            placeholder: field.placeholder,
+            helpText: field.helpText,
+            sortOrder: field.sortOrder,
+            isRequired: field.isRequired,
+            validationJson: field.validationJson ?? undefined,
+          })),
+        });
+      }
+    },
+    {
+      timeout: 60_000,
+    },
+  );
+
+  return {
+    versionId: version.id,
+    year: targetYear,
+    updatedTables: normalizedSchema.tables.map((table) => table.id),
+    addedRows: normalizedSchema.tables.reduce((sum, table) => sum + table.rows.length, 0),
+    addedColumns: normalizedSchema.tables.reduce((sum, table) => sum + table.columns.length, 0),
+    clearedSubmissionValues: existingArchiveSubmissionValues,
+    fieldCount: projectedFields.length,
+  };
+}
+
 export async function applyArchiveF12PilotMapping(params?: {
   year?: number;
   limit?: number;
+  offset?: number;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
@@ -1988,6 +2765,7 @@ export async function applyArchiveF12PilotMapping(params?: {
     orderBy: {
       storagePath: "asc",
     },
+    skip: params?.offset ?? undefined,
     take: params?.limit ?? undefined,
   });
 
@@ -2440,6 +3218,1664 @@ export async function applyArchiveF12PilotMapping(params?: {
           data: {
             reviewComment:
               `Пилотный auto-mapping F12: ${matchedEntries.size} значений сопоставлено, ` +
+              `${fileUnmatched} значений требуют ручной проверки. Источник: ${file.storagePath}`,
+          },
+        });
+      },
+      {
+        timeout: 60_000,
+      },
+    );
+
+    mappedSubmissions += 1;
+    mappedValues += matchedEntries.size;
+    unmatchedValues += fileUnmatched;
+  }
+
+  return {
+    selectedFiles: extractedFiles.length,
+    mappedSubmissions,
+    mappedValues,
+    unmatchedValues,
+  };
+}
+
+export async function applyArchiveF14PilotMapping(params?: {
+  year?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const extractedFiles = await prisma.importFile.findMany({
+    where: {
+      batchId: HANDOFF_BATCH_NAME,
+      status: ImportFileStatus.EXTRACTED,
+      regionId: {
+        not: null,
+      },
+      formType: {
+        code: "F14",
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      region: true,
+      reportingYear: true,
+      formType: true,
+      fieldValues: true,
+    },
+    orderBy: {
+      storagePath: "asc",
+    },
+    skip: params?.offset ?? undefined,
+    take: params?.limit ?? undefined,
+  });
+
+  if (extractedFiles.length === 0) {
+    return {
+      selectedFiles: 0,
+      mappedSubmissions: 0,
+      mappedValues: 0,
+      unmatchedValues: 0,
+    };
+  }
+
+  const assignments = await prisma.formAssignment.findMany({
+    where: {
+      regionId: {
+        in: extractedFiles
+          .map((file) => file.regionId)
+          .filter((regionId): regionId is string => Boolean(regionId)),
+      },
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      templateVersion: {
+        template: {
+          formType: {
+            code: "F14",
+          },
+        },
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          fields: true,
+        },
+      },
+      submissions: {
+        include: {
+          values: true,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  const assignmentByRegionId = new Map(
+    assignments.map((assignment) => [assignment.regionId, assignment]),
+  );
+
+  let mappedSubmissions = 0;
+  let mappedValues = 0;
+  let unmatchedValues = 0;
+
+  for (const file of extractedFiles) {
+    if (!file.regionId) {
+      continue;
+    }
+
+    const assignment = assignmentByRegionId.get(file.regionId);
+    const submission = assignment?.submissions[0] ?? null;
+    if (!assignment || !submission) {
+      continue;
+    }
+
+    const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
+      tables?: Array<{
+        id?: string;
+        columns?: Array<{
+          key?: string;
+        }>;
+        rows?: Array<{
+          key?: string;
+          descriptorValues?: Record<string, string | number | null>;
+        }>;
+      }>;
+    };
+    const schemaRowLookupByTableId = new Map<
+      string,
+      { byPrintedNumber: Map<string, string>; byCode: Map<string, string> }
+    >();
+    const schemaColumnKeyByRankByTableId = new Map<string, Map<number, string>>();
+    for (const table of templateSchema.tables ?? []) {
+      if (!table.id) {
+        continue;
+      }
+
+      const byPrintedNumber = new Map<string, string>();
+      const byCode = new Map<string, string>();
+
+      for (const row of table.rows ?? []) {
+        if (!row.key || !row.descriptorValues) {
+          continue;
+        }
+
+        const descriptorValues = Object.values(row.descriptorValues);
+        const printedNumber = normalizeArchiveText(
+          descriptorValues[0] === null || descriptorValues[0] === undefined
+            ? null
+            : String(descriptorValues[0]),
+        );
+        const code = normalizeArchiveCode(
+          descriptorValues[1] === null || descriptorValues[1] === undefined
+            ? null
+            : String(descriptorValues[1]),
+        );
+
+        if (printedNumber) {
+          byPrintedNumber.set(printedNumber, row.key);
+        }
+
+        if (code) {
+          byCode.set(code, row.key);
+        }
+      }
+
+      schemaRowLookupByTableId.set(table.id, {
+        byPrintedNumber,
+        byCode,
+      });
+
+      const columnKeyByRank = new Map<number, string>();
+      (table.columns ?? []).forEach((column, index) => {
+        if (column.key) {
+          columnKeyByRank.set(index + 1, column.key);
+        }
+      });
+      schemaColumnKeyByRankByTableId.set(table.id, columnKeyByRank);
+    }
+
+    const tableFields = assignment.templateVersion.fields.filter((field) => field.tableId);
+    const fieldByCompositeKey = new Map<string, (typeof tableFields)[number]>();
+    const singleRowFieldByTableAndColumn = new Map<string, (typeof tableFields)[number]>();
+    const rowKeyCountByTableId = new Map<string, Set<string>>();
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      if (field.rowKey) {
+        fieldByCompositeKey.set(`${field.tableId}::${field.rowKey}::${field.columnKey}`, field);
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (field.rowKey) {
+        rowKeySet.add(field.rowKey);
+      }
+      rowKeyCountByTableId.set(field.tableId, rowKeySet);
+    }
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (rowKeySet.size <= 1) {
+        singleRowFieldByTableAndColumn.set(`${field.tableId}::${field.columnKey}`, field);
+      }
+    }
+
+    const matchedEntries = new Map<
+      string,
+      {
+        fieldId: string;
+        valueText: string | null;
+        valueNumber: number | null;
+        contextJson: unknown;
+      }
+    >();
+    let fileUnmatched = 0;
+    const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const normalizedColumnNo = normalizeArchiveText(context.colNo);
+
+      if (!normalizedTableCode || !normalizedColumnNo) {
+        continue;
+      }
+
+      const columnRankMap = rawColumnRankByTableCode.get(normalizedTableCode) ?? new Map<string, number>();
+      columnRankMap.set(normalizedColumnNo, 0);
+      rawColumnRankByTableCode.set(normalizedTableCode, columnRankMap);
+    }
+
+    for (const columnRankMap of rawColumnRankByTableCode.values()) {
+      Array.from(columnRankMap.keys())
+        .sort((left, right) => Number(left) - Number(right))
+        .forEach((colNo, index) => {
+          columnRankMap.set(colNo, index + 1);
+        });
+    }
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        rowNo?: string | null;
+        rowLabel?: string | null;
+        colLabel?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const tableId = normalizedTableCode ? createArchiveTableId("F14", normalizedTableCode) : null;
+
+      if (!tableId) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const schemaRowLookup = schemaRowLookupByTableId.get(tableId) ?? null;
+      const targetRowKey =
+        schemaRowLookup?.byPrintedNumber.get(normalizeArchiveText(context.rowNo)) ??
+        schemaRowLookup?.byCode.get(normalizeArchiveCode(context.rowLabel)) ??
+        null;
+      const rawColumnRank = context.colNo
+        ? rawColumnRankByTableCode.get(normalizedTableCode ?? "")?.get(normalizeArchiveText(context.colNo))
+        : null;
+      const targetColumnKey =
+        rawColumnRank && schemaColumnKeyByRankByTableId.get(tableId)
+          ? schemaColumnKeyByRankByTableId.get(tableId)?.get(rawColumnRank) ?? null
+          : null;
+
+      if (!targetColumnKey) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const matchedField =
+        (targetRowKey
+          ? fieldByCompositeKey.get(`${tableId}::${targetRowKey}::${targetColumnKey}`) ?? null
+          : null) ??
+        singleRowFieldByTableAndColumn.get(`${tableId}::${targetColumnKey}`) ??
+        null;
+
+      if (!matchedField) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      matchedEntries.set(matchedField.id, {
+        fieldId: matchedField.id,
+        valueText: fieldValue.valueText ?? null,
+        valueNumber:
+          typeof fieldValue.valueNumber === "object" && fieldValue.valueNumber !== null
+            ? Number(fieldValue.valueNumber)
+            : (fieldValue.valueNumber as number | null),
+        contextJson: fieldValue.contextJson,
+      });
+    }
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.submissionValue.deleteMany({
+          where: {
+            submissionId: submission.id,
+          },
+        });
+
+        const values = Array.from(matchedEntries.values());
+        for (const valueChunk of chunkArray(values, 1000)) {
+          if (valueChunk.length === 0) {
+            continue;
+          }
+
+          await tx.submissionValue.createMany({
+            data: valueChunk.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueJson: {
+                archiveMapping: {
+                  strategy: "f14-pilot-table-row-col",
+                  importedAt: new Date().toISOString(),
+                  sourceImportFileId: file.id,
+                  sourceDoc: file.storagePath,
+                  contextText: JSON.stringify(entry.contextJson ?? null),
+                },
+              },
+            })),
+          });
+        }
+
+        await tx.submission.update({
+          where: {
+            id: submission.id,
+          },
+          data: {
+            reviewComment:
+              `Пилотный auto-mapping F14: ${matchedEntries.size} значений сопоставлено, ` +
+              `${fileUnmatched} значений требуют ручной проверки. Источник: ${file.storagePath}`,
+          },
+        });
+      },
+      {
+        timeout: 60_000,
+      },
+    );
+
+    mappedSubmissions += 1;
+    mappedValues += matchedEntries.size;
+    unmatchedValues += fileUnmatched;
+  }
+
+  return {
+    selectedFiles: extractedFiles.length,
+    mappedSubmissions,
+    mappedValues,
+    unmatchedValues,
+  };
+}
+
+export async function applyArchiveF19PilotMapping(params?: {
+  year?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const extractedFiles = await prisma.importFile.findMany({
+    where: {
+      batchId: HANDOFF_BATCH_NAME,
+      status: ImportFileStatus.EXTRACTED,
+      regionId: {
+        not: null,
+      },
+      formType: {
+        code: "F19",
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      region: true,
+      reportingYear: true,
+      formType: true,
+      fieldValues: true,
+    },
+    orderBy: {
+      storagePath: "asc",
+    },
+    skip: params?.offset ?? undefined,
+    take: params?.limit ?? undefined,
+  });
+
+  if (extractedFiles.length === 0) {
+    return {
+      selectedFiles: 0,
+      mappedSubmissions: 0,
+      mappedValues: 0,
+      unmatchedValues: 0,
+    };
+  }
+
+  const assignments = await prisma.formAssignment.findMany({
+    where: {
+      regionId: {
+        in: extractedFiles
+          .map((file) => file.regionId)
+          .filter((regionId): regionId is string => Boolean(regionId)),
+      },
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      templateVersion: {
+        template: {
+          formType: {
+            code: "F19",
+          },
+        },
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          fields: true,
+        },
+      },
+      submissions: {
+        include: {
+          values: true,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  const assignmentByRegionId = new Map(
+    assignments.map((assignment) => [assignment.regionId, assignment]),
+  );
+
+  let mappedSubmissions = 0;
+  let mappedValues = 0;
+  let unmatchedValues = 0;
+
+  for (const file of extractedFiles) {
+    if (!file.regionId) {
+      continue;
+    }
+
+    const assignment = assignmentByRegionId.get(file.regionId);
+    const submission = assignment?.submissions[0] ?? null;
+    if (!assignment || !submission) {
+      continue;
+    }
+
+    const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
+      tables?: Array<{
+        id?: string;
+        columns?: Array<{
+          key?: string;
+        }>;
+        rows?: Array<{
+          key?: string;
+          descriptorValues?: Record<string, string | number | null>;
+        }>;
+      }>;
+    };
+    const schemaRowLookupByTableId = new Map<
+      string,
+      { byPrintedNumber: Map<string, string>; byCode: Map<string, string> }
+    >();
+    const schemaColumnKeyByRankByTableId = new Map<string, Map<number, string>>();
+    for (const table of templateSchema.tables ?? []) {
+      if (!table.id) {
+        continue;
+      }
+
+      const byPrintedNumber = new Map<string, string>();
+      const byCode = new Map<string, string>();
+
+      for (const row of table.rows ?? []) {
+        if (!row.key || !row.descriptorValues) {
+          continue;
+        }
+
+        const descriptorValues = Object.values(row.descriptorValues);
+        const printedNumber = normalizeArchiveText(
+          descriptorValues[0] === null || descriptorValues[0] === undefined
+            ? null
+            : String(descriptorValues[0]),
+        );
+        const code = normalizeArchiveCode(
+          descriptorValues[1] === null || descriptorValues[1] === undefined
+            ? null
+            : String(descriptorValues[1]),
+        );
+
+        if (printedNumber) {
+          byPrintedNumber.set(printedNumber, row.key);
+        }
+
+        if (code) {
+          byCode.set(code, row.key);
+        }
+      }
+
+      schemaRowLookupByTableId.set(table.id, {
+        byPrintedNumber,
+        byCode,
+      });
+
+      const columnKeyByRank = new Map<number, string>();
+      (table.columns ?? []).forEach((column, index) => {
+        if (column.key) {
+          columnKeyByRank.set(index + 1, column.key);
+        }
+      });
+      schemaColumnKeyByRankByTableId.set(table.id, columnKeyByRank);
+    }
+
+    const tableFields = assignment.templateVersion.fields.filter((field) => field.tableId);
+    const fieldByCompositeKey = new Map<string, (typeof tableFields)[number]>();
+    const singleRowFieldByTableAndColumn = new Map<string, (typeof tableFields)[number]>();
+    const rowKeyCountByTableId = new Map<string, Set<string>>();
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      if (field.rowKey) {
+        fieldByCompositeKey.set(`${field.tableId}::${field.rowKey}::${field.columnKey}`, field);
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (field.rowKey) {
+        rowKeySet.add(field.rowKey);
+      }
+      rowKeyCountByTableId.set(field.tableId, rowKeySet);
+    }
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (rowKeySet.size <= 1) {
+        singleRowFieldByTableAndColumn.set(`${field.tableId}::${field.columnKey}`, field);
+      }
+    }
+
+    const matchedEntries = new Map<
+      string,
+      {
+        fieldId: string;
+        valueText: string | null;
+        valueNumber: number | null;
+        contextJson: unknown;
+      }
+    >();
+    let fileUnmatched = 0;
+    const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const normalizedColumnNo = normalizeArchiveText(context.colNo);
+
+      if (!normalizedTableCode || !normalizedColumnNo) {
+        continue;
+      }
+
+      const columnRankMap = rawColumnRankByTableCode.get(normalizedTableCode) ?? new Map<string, number>();
+      columnRankMap.set(normalizedColumnNo, 0);
+      rawColumnRankByTableCode.set(normalizedTableCode, columnRankMap);
+    }
+
+    for (const columnRankMap of rawColumnRankByTableCode.values()) {
+      Array.from(columnRankMap.keys())
+        .sort((left, right) => Number(left) - Number(right))
+        .forEach((colNo, index) => {
+          columnRankMap.set(colNo, index + 1);
+        });
+    }
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        rowNo?: string | null;
+        rowLabel?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const tableId = normalizedTableCode ? createArchiveTableId("F19", normalizedTableCode) : null;
+
+      if (!tableId) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const schemaRowLookup = schemaRowLookupByTableId.get(tableId) ?? null;
+      const targetRowKey =
+        schemaRowLookup?.byPrintedNumber.get(normalizeArchiveText(context.rowNo)) ??
+        schemaRowLookup?.byCode.get(normalizeArchiveCode(context.rowLabel)) ??
+        null;
+      const rawColumnRank = context.colNo
+        ? rawColumnRankByTableCode.get(normalizedTableCode ?? "")?.get(normalizeArchiveText(context.colNo))
+        : null;
+      const targetColumnKey =
+        rawColumnRank && schemaColumnKeyByRankByTableId.get(tableId)
+          ? schemaColumnKeyByRankByTableId.get(tableId)?.get(rawColumnRank) ?? null
+          : null;
+
+      if (!targetColumnKey) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const matchedField =
+        (targetRowKey
+          ? fieldByCompositeKey.get(`${tableId}::${targetRowKey}::${targetColumnKey}`) ?? null
+          : null) ??
+        singleRowFieldByTableAndColumn.get(`${tableId}::${targetColumnKey}`) ??
+        null;
+
+      if (!matchedField) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      matchedEntries.set(matchedField.id, {
+        fieldId: matchedField.id,
+        valueText: fieldValue.valueText ?? null,
+        valueNumber:
+          typeof fieldValue.valueNumber === "object" && fieldValue.valueNumber !== null
+            ? Number(fieldValue.valueNumber)
+            : (fieldValue.valueNumber as number | null),
+        contextJson: fieldValue.contextJson,
+      });
+    }
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.submissionValue.deleteMany({
+          where: {
+            submissionId: submission.id,
+          },
+        });
+
+        const values = Array.from(matchedEntries.values());
+        for (const valueChunk of chunkArray(values, 1000)) {
+          if (valueChunk.length === 0) {
+            continue;
+          }
+
+          await tx.submissionValue.createMany({
+            data: valueChunk.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueJson: {
+                archiveMapping: {
+                  strategy: "f19-pilot-table-row-col",
+                  importedAt: new Date().toISOString(),
+                  sourceImportFileId: file.id,
+                  sourceDoc: file.storagePath,
+                  contextText: JSON.stringify(entry.contextJson ?? null),
+                },
+              },
+            })),
+          });
+        }
+
+        await tx.submission.update({
+          where: {
+            id: submission.id,
+          },
+          data: {
+            reviewComment:
+              `Пилотный auto-mapping F19: ${matchedEntries.size} значений сопоставлено, ` +
+              `${fileUnmatched} значений требуют ручной проверки. Источник: ${file.storagePath}`,
+          },
+        });
+      },
+      {
+        timeout: 60_000,
+      },
+    );
+
+    mappedSubmissions += 1;
+    mappedValues += matchedEntries.size;
+    unmatchedValues += fileUnmatched;
+  }
+
+  return {
+    selectedFiles: extractedFiles.length,
+    mappedSubmissions,
+    mappedValues,
+    unmatchedValues,
+  };
+}
+
+export async function applyArchiveF30PilotMapping(params?: {
+  year?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const extractedFiles = await prisma.importFile.findMany({
+    where: {
+      batchId: HANDOFF_BATCH_NAME,
+      status: ImportFileStatus.EXTRACTED,
+      regionId: {
+        not: null,
+      },
+      formType: {
+        code: "F30",
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      region: true,
+      reportingYear: true,
+      formType: true,
+      fieldValues: true,
+    },
+    orderBy: {
+      storagePath: "asc",
+    },
+    skip: params?.offset ?? undefined,
+    take: params?.limit ?? undefined,
+  });
+
+  if (extractedFiles.length === 0) {
+    return {
+      selectedFiles: 0,
+      mappedSubmissions: 0,
+      mappedValues: 0,
+      unmatchedValues: 0,
+    };
+  }
+
+  const assignments = await prisma.formAssignment.findMany({
+    where: {
+      regionId: {
+        in: extractedFiles
+          .map((file) => file.regionId)
+          .filter((regionId): regionId is string => Boolean(regionId)),
+      },
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      templateVersion: {
+        template: {
+          formType: {
+            code: "F30",
+          },
+        },
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          fields: true,
+        },
+      },
+      submissions: {
+        include: {
+          values: true,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  const assignmentByRegionId = new Map(
+    assignments.map((assignment) => [assignment.regionId, assignment]),
+  );
+
+  let mappedSubmissions = 0;
+  let mappedValues = 0;
+  let unmatchedValues = 0;
+
+  for (const file of extractedFiles) {
+    if (!file.regionId) {
+      continue;
+    }
+
+    const assignment = assignmentByRegionId.get(file.regionId);
+    const submission = assignment?.submissions[0] ?? null;
+    if (!assignment || !submission) {
+      continue;
+    }
+
+    const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
+      tables?: Array<{
+        id?: string;
+        columns?: Array<{
+          key?: string;
+        }>;
+        rows?: Array<{
+          key?: string;
+          descriptorValues?: Record<string, string | number | null>;
+        }>;
+      }>;
+    };
+    const schemaRowLookupByTableId = new Map<
+      string,
+      { byPrintedNumber: Map<string, string>; byCode: Map<string, string> }
+    >();
+    const schemaColumnKeyByRankByTableId = new Map<string, Map<number, string>>();
+    for (const table of templateSchema.tables ?? []) {
+      if (!table.id) {
+        continue;
+      }
+
+      const byPrintedNumber = new Map<string, string>();
+      const byCode = new Map<string, string>();
+
+      for (const row of table.rows ?? []) {
+        if (!row.key || !row.descriptorValues) {
+          continue;
+        }
+
+        const descriptorValues = Object.values(row.descriptorValues);
+        const printedNumber = normalizeArchiveText(
+          descriptorValues[0] === null || descriptorValues[0] === undefined
+            ? null
+            : String(descriptorValues[0]),
+        );
+        const code = normalizeArchiveCode(
+          descriptorValues[1] === null || descriptorValues[1] === undefined
+            ? null
+            : String(descriptorValues[1]),
+        );
+
+        if (printedNumber) {
+          byPrintedNumber.set(printedNumber, row.key);
+        }
+
+        if (code) {
+          byCode.set(code, row.key);
+        }
+      }
+
+      schemaRowLookupByTableId.set(table.id, {
+        byPrintedNumber,
+        byCode,
+      });
+
+      const columnKeyByRank = new Map<number, string>();
+      (table.columns ?? []).forEach((column, index) => {
+        if (column.key) {
+          columnKeyByRank.set(index + 1, column.key);
+        }
+      });
+      schemaColumnKeyByRankByTableId.set(table.id, columnKeyByRank);
+    }
+
+    const tableFields = assignment.templateVersion.fields.filter((field) => field.tableId);
+    const fieldByCompositeKey = new Map<string, (typeof tableFields)[number]>();
+    const singleRowFieldByTableAndColumn = new Map<string, (typeof tableFields)[number]>();
+    const rowKeyCountByTableId = new Map<string, Set<string>>();
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      if (field.rowKey) {
+        fieldByCompositeKey.set(`${field.tableId}::${field.rowKey}::${field.columnKey}`, field);
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (field.rowKey) {
+        rowKeySet.add(field.rowKey);
+      }
+      rowKeyCountByTableId.set(field.tableId, rowKeySet);
+    }
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (rowKeySet.size <= 1) {
+        singleRowFieldByTableAndColumn.set(`${field.tableId}::${field.columnKey}`, field);
+      }
+    }
+
+    const matchedEntries = new Map<
+      string,
+      {
+        fieldId: string;
+        valueText: string | null;
+        valueNumber: number | null;
+        contextJson: unknown;
+      }
+    >();
+    let fileUnmatched = 0;
+    const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const normalizedColumnNo = normalizeArchiveText(context.colNo);
+
+      if (!normalizedTableCode || !normalizedColumnNo) {
+        continue;
+      }
+
+      const columnRankMap = rawColumnRankByTableCode.get(normalizedTableCode) ?? new Map<string, number>();
+      columnRankMap.set(normalizedColumnNo, 0);
+      rawColumnRankByTableCode.set(normalizedTableCode, columnRankMap);
+    }
+
+    for (const columnRankMap of rawColumnRankByTableCode.values()) {
+      Array.from(columnRankMap.keys())
+        .sort((left, right) => Number(left) - Number(right))
+        .forEach((colNo, index) => {
+          columnRankMap.set(colNo, index + 1);
+        });
+    }
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        rowNo?: string | null;
+        rowLabel?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const tableId = normalizedTableCode ? createArchiveTableId("F30", normalizedTableCode) : null;
+
+      if (!tableId) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const schemaRowLookup = schemaRowLookupByTableId.get(tableId) ?? null;
+      const targetRowKey =
+        schemaRowLookup?.byPrintedNumber.get(normalizeArchiveText(context.rowNo)) ??
+        schemaRowLookup?.byCode.get(normalizeArchiveCode(context.rowLabel)) ??
+        null;
+      const rawColumnRank = context.colNo
+        ? rawColumnRankByTableCode.get(normalizedTableCode ?? "")?.get(normalizeArchiveText(context.colNo))
+        : null;
+      const targetColumnKey =
+        rawColumnRank && schemaColumnKeyByRankByTableId.get(tableId)
+          ? schemaColumnKeyByRankByTableId.get(tableId)?.get(rawColumnRank) ?? null
+          : null;
+
+      if (!targetColumnKey) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const matchedField =
+        (targetRowKey
+          ? fieldByCompositeKey.get(`${tableId}::${targetRowKey}::${targetColumnKey}`) ?? null
+          : null) ??
+        singleRowFieldByTableAndColumn.get(`${tableId}::${targetColumnKey}`) ??
+        null;
+
+      if (!matchedField) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      matchedEntries.set(matchedField.id, {
+        fieldId: matchedField.id,
+        valueText: fieldValue.valueText ?? null,
+        valueNumber:
+          typeof fieldValue.valueNumber === "object" && fieldValue.valueNumber !== null
+            ? Number(fieldValue.valueNumber)
+            : (fieldValue.valueNumber as number | null),
+        contextJson: fieldValue.contextJson,
+      });
+    }
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.submissionValue.deleteMany({
+          where: {
+            submissionId: submission.id,
+          },
+        });
+
+        const values = Array.from(matchedEntries.values());
+        for (const valueChunk of chunkArray(values, 1000)) {
+          if (valueChunk.length === 0) {
+            continue;
+          }
+
+          await tx.submissionValue.createMany({
+            data: valueChunk.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueJson: {
+                archiveMapping: {
+                  strategy: "f30-pilot-table-row-col",
+                  importedAt: new Date().toISOString(),
+                  sourceImportFileId: file.id,
+                  sourceDoc: file.storagePath,
+                  contextText: JSON.stringify(entry.contextJson ?? null),
+                },
+              },
+            })),
+          });
+        }
+
+        await tx.submission.update({
+          where: {
+            id: submission.id,
+          },
+          data: {
+            reviewComment:
+              `Пилотный auto-mapping F30: ${matchedEntries.size} значений сопоставлено, ` +
+              `${fileUnmatched} значений требуют ручной проверки. Источник: ${file.storagePath}`,
+          },
+        });
+      },
+      {
+        timeout: 60_000,
+      },
+    );
+
+    mappedSubmissions += 1;
+    mappedValues += matchedEntries.size;
+    unmatchedValues += fileUnmatched;
+  }
+
+  return {
+    selectedFiles: extractedFiles.length,
+    mappedSubmissions,
+    mappedValues,
+    unmatchedValues,
+  };
+}
+
+export async function enrichArchiveF47Structure(params?: {
+  year?: number;
+  versionId?: string;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const targetVersion =
+    params?.versionId ??
+    (
+      await prisma.formTemplateVersion.findFirst({
+        where: {
+          template: {
+            formType: {
+              code: "F47",
+            },
+          },
+          reportingYear: {
+            year: targetYear,
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      })
+    )?.id ??
+    null;
+
+  if (!targetVersion) {
+    throw new Error(`Не найдена архивная версия F47 за ${targetYear}.`);
+  }
+
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: {
+      id: targetVersion,
+    },
+  });
+
+  if (!version) {
+    throw new Error(`Версия шаблона ${targetVersion} не найдена.`);
+  }
+
+  const semanticCells = await prisma.$queryRaw<
+    Array<{
+      table_code: string;
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >`
+    select
+      table_code,
+      max(table_title) as table_title,
+      row_no,
+      max(row_label) as row_label,
+      col_no,
+      max(col_label) as col_label
+    from statforms.semantic_passports_final_v2
+    where form = 'F47'
+      and year = ${targetYear}
+      and table_code not in ('0001', '0002')
+    group by table_code, row_no, col_no
+    order by table_code, row_no::int, col_no::int
+  `;
+
+  const byTableCode = new Map<
+    string,
+    Array<{
+      table_title: string | null;
+      row_no: string;
+      row_label: string | null;
+      col_no: string;
+      col_label: string | null;
+    }>
+  >();
+  for (const cell of semanticCells) {
+    const entries = byTableCode.get(cell.table_code) ?? [];
+    entries.push({
+      table_title: cell.table_title,
+      row_no: cell.row_no,
+      row_label: cell.row_label,
+      col_no: cell.col_no,
+      col_label: cell.col_label,
+    });
+    byTableCode.set(cell.table_code, entries);
+  }
+
+  const schema = parseAndNormalizeFormSchema(version.schemaJson);
+  schema.tables = Array.from(byTableCode.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([tableCode, cells]) => {
+      const sortedCells = cells.sort(
+        (left, right) =>
+          Number(left.row_no) - Number(right.row_no) || Number(left.col_no) - Number(right.col_no),
+      );
+      const uniqueRows = Array.from(
+        new Map(sortedCells.map((cell) => [cell.row_no, cell])).values(),
+      ).sort((left, right) => Number(left.row_no) - Number(right.row_no));
+      const uniqueColumns = Array.from(
+        new Map(sortedCells.map((cell) => [cell.col_no, cell])).values(),
+      ).sort((left, right) => Number(left.col_no) - Number(right.col_no));
+
+      const descriptorColumns = [
+        {
+          id: `descriptor_${tableCode}_1`,
+          key: `printed_row_${tableCode}`,
+          label: "№ строки",
+          width: 120,
+          sticky: false,
+        },
+        {
+          id: `descriptor_${tableCode}_2`,
+          key: `code_${tableCode}`,
+          label: "Код",
+          width: 180,
+          sticky: false,
+        },
+      ];
+
+      const rows = uniqueRows.map((row, rowIndex) => {
+        const rowLabel = cleanArchiveSemanticLabel(row.row_label) || `Строка ${row.row_no}`;
+        return {
+          id: `row_${tableCode}_${rowIndex + 1}`,
+          key: `archive_f47_${tableCode}_row_${rowIndex + 1}`,
+          label: rowLabel,
+          description: null,
+          rowType: "data" as const,
+          indent: 0,
+          groupPrefix: null,
+          descriptorValues: {
+            [descriptorColumns[0].id]: normalizeArchiveText(row.row_no) || row.row_no,
+            [descriptorColumns[1].id]: rowLabel,
+          },
+        };
+      });
+
+      const columns = uniqueColumns.map((column, columnIndex) => ({
+        id: `column_${tableCode}_${columnIndex + 1}`,
+        key: `value_${columnIndex + 1}_${tableCode}`,
+        label: createGenericArchiveColumnLabel(column.col_label, column.col_no),
+        fieldType: "number" as const,
+        unit: "шт.",
+        required: false,
+        width: 220,
+        sticky: false,
+        placeholder: null,
+        helpText: null,
+        options: [],
+        validation: {},
+      }));
+
+      return {
+        id: createArchiveTableId("F47", tableCode),
+        title: cleanArchiveTableTitle(sortedCells[0]?.table_title, tableCode),
+        description: `Автоматически построено из semantic passport F47 (${tableCode}).`,
+        descriptorColumns,
+        columns,
+        rows,
+        settings: {
+          stickyHeader: true,
+          stickyFirstColumn: true,
+          horizontalScroll: true,
+        },
+      };
+    });
+
+  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const projectedFields = projectSchemaToFields(normalizedSchema);
+  const existingArchiveSubmissionValues = await prisma.submissionValue.count({
+    where: {
+      submission: {
+        assignment: {
+          templateVersionId: version.id,
+        },
+      },
+    },
+  });
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.submissionValue.deleteMany({
+        where: {
+          submission: {
+            assignment: {
+              templateVersionId: version.id,
+            },
+          },
+        },
+      });
+
+      await tx.formTemplateVersion.update({
+        where: {
+          id: version.id,
+        },
+        data: {
+          schemaJson: normalizedSchema,
+        },
+      });
+
+      await tx.formField.deleteMany({
+        where: {
+          templateVersionId: version.id,
+        },
+      });
+
+      for (const fieldChunk of chunkArray(projectedFields, 1000)) {
+        if (fieldChunk.length === 0) {
+          continue;
+        }
+
+        await tx.formField.createMany({
+          data: fieldChunk.map((field) => ({
+            templateVersionId: version.id,
+            key: field.key,
+            label: field.label,
+            section: field.section,
+            tableId: field.tableId,
+            rowId: field.rowId,
+            rowKey: field.rowKey,
+            columnId: field.columnId,
+            columnKey: field.columnKey,
+            fieldPath: field.fieldPath,
+            fieldType: field.fieldType,
+            unit: field.unit,
+            placeholder: field.placeholder,
+            helpText: field.helpText,
+            sortOrder: field.sortOrder,
+            isRequired: field.isRequired,
+            validationJson: field.validationJson ?? undefined,
+          })),
+        });
+      }
+    },
+    {
+      timeout: 60_000,
+    },
+  );
+
+  return {
+    versionId: version.id,
+    year: targetYear,
+    updatedTables: normalizedSchema.tables.map((table) => table.id),
+    addedRows: normalizedSchema.tables.reduce((sum, table) => sum + table.rows.length, 0),
+    addedColumns: normalizedSchema.tables.reduce((sum, table) => sum + table.columns.length, 0),
+    clearedSubmissionValues: existingArchiveSubmissionValues,
+    fieldCount: projectedFields.length,
+  };
+}
+
+export async function applyArchiveF47PilotMapping(params?: {
+  year?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const targetYear = params?.year ?? 2024;
+  const extractedFiles = await prisma.importFile.findMany({
+    where: {
+      batchId: HANDOFF_BATCH_NAME,
+      status: ImportFileStatus.EXTRACTED,
+      regionId: {
+        not: null,
+      },
+      formType: {
+        code: "F47",
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      region: true,
+      reportingYear: true,
+      formType: true,
+      fieldValues: true,
+    },
+    orderBy: {
+      storagePath: "asc",
+    },
+    skip: params?.offset ?? undefined,
+    take: params?.limit ?? undefined,
+  });
+
+  if (extractedFiles.length === 0) {
+    return {
+      selectedFiles: 0,
+      mappedSubmissions: 0,
+      mappedValues: 0,
+      unmatchedValues: 0,
+    };
+  }
+
+  const assignments = await prisma.formAssignment.findMany({
+    where: {
+      regionId: {
+        in: extractedFiles
+          .map((file) => file.regionId)
+          .filter((regionId): regionId is string => Boolean(regionId)),
+      },
+      organization: {
+        type: OrganizationType.REGION_CENTER,
+      },
+      templateVersion: {
+        template: {
+          formType: {
+            code: "F47",
+          },
+        },
+      },
+      reportingYear: {
+        year: targetYear,
+      },
+    },
+    include: {
+      templateVersion: {
+        include: {
+          fields: true,
+        },
+      },
+      submissions: {
+        include: {
+          values: true,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  const assignmentByRegionId = new Map(
+    assignments.map((assignment) => [assignment.regionId, assignment]),
+  );
+
+  let mappedSubmissions = 0;
+  let mappedValues = 0;
+  let unmatchedValues = 0;
+
+  for (const file of extractedFiles) {
+    if (!file.regionId) {
+      continue;
+    }
+
+    const assignment = assignmentByRegionId.get(file.regionId);
+    const submission = assignment?.submissions[0] ?? null;
+    if (!assignment || !submission) {
+      continue;
+    }
+
+    const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
+      tables?: Array<{
+        id?: string;
+        columns?: Array<{
+          key?: string;
+        }>;
+        rows?: Array<{
+          key?: string;
+          descriptorValues?: Record<string, string | number | null>;
+        }>;
+      }>;
+    };
+    const schemaRowLookupByTableId = new Map<
+      string,
+      { byPrintedNumber: Map<string, string>; byCode: Map<string, string> }
+    >();
+    const schemaColumnKeyByRankByTableId = new Map<string, Map<number, string>>();
+    for (const table of templateSchema.tables ?? []) {
+      if (!table.id) {
+        continue;
+      }
+
+      const byPrintedNumber = new Map<string, string>();
+      const byCode = new Map<string, string>();
+
+      for (const row of table.rows ?? []) {
+        if (!row.key || !row.descriptorValues) {
+          continue;
+        }
+
+        const descriptorValues = Object.values(row.descriptorValues);
+        const printedNumber = normalizeArchiveText(
+          descriptorValues[0] === null || descriptorValues[0] === undefined
+            ? null
+            : String(descriptorValues[0]),
+        );
+        const code = normalizeArchiveCode(
+          descriptorValues[1] === null || descriptorValues[1] === undefined
+            ? null
+            : String(descriptorValues[1]),
+        );
+
+        if (printedNumber) {
+          byPrintedNumber.set(printedNumber, row.key);
+        }
+
+        if (code) {
+          byCode.set(code, row.key);
+        }
+      }
+
+      schemaRowLookupByTableId.set(table.id, {
+        byPrintedNumber,
+        byCode,
+      });
+
+      const columnKeyByRank = new Map<number, string>();
+      (table.columns ?? []).forEach((column, index) => {
+        if (column.key) {
+          columnKeyByRank.set(index + 1, column.key);
+        }
+      });
+      schemaColumnKeyByRankByTableId.set(table.id, columnKeyByRank);
+    }
+
+    const tableFields = assignment.templateVersion.fields.filter((field) => field.tableId);
+    const fieldByCompositeKey = new Map<string, (typeof tableFields)[number]>();
+    const singleRowFieldByTableAndColumn = new Map<string, (typeof tableFields)[number]>();
+    const rowKeyCountByTableId = new Map<string, Set<string>>();
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      if (field.rowKey) {
+        fieldByCompositeKey.set(`${field.tableId}::${field.rowKey}::${field.columnKey}`, field);
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (field.rowKey) {
+        rowKeySet.add(field.rowKey);
+      }
+      rowKeyCountByTableId.set(field.tableId, rowKeySet);
+    }
+
+    for (const field of tableFields) {
+      if (!field.tableId || !field.columnKey) {
+        continue;
+      }
+
+      const rowKeySet = rowKeyCountByTableId.get(field.tableId) ?? new Set<string>();
+      if (rowKeySet.size <= 1) {
+        singleRowFieldByTableAndColumn.set(`${field.tableId}::${field.columnKey}`, field);
+      }
+    }
+
+    const matchedEntries = new Map<
+      string,
+      {
+        fieldId: string;
+        valueText: string | null;
+        valueNumber: number | null;
+        contextJson: unknown;
+      }
+    >();
+    let fileUnmatched = 0;
+    const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const normalizedColumnNo = normalizeArchiveText(context.colNo);
+
+      if (!normalizedTableCode || !normalizedColumnNo) {
+        continue;
+      }
+
+      const columnRankMap = rawColumnRankByTableCode.get(normalizedTableCode) ?? new Map<string, number>();
+      columnRankMap.set(normalizedColumnNo, 0);
+      rawColumnRankByTableCode.set(normalizedTableCode, columnRankMap);
+    }
+
+    for (const columnRankMap of rawColumnRankByTableCode.values()) {
+      Array.from(columnRankMap.keys())
+        .sort((left, right) => Number(left) - Number(right))
+        .forEach((colNo, index) => {
+          columnRankMap.set(colNo, index + 1);
+        });
+    }
+
+    for (const fieldValue of file.fieldValues) {
+      const context = (fieldValue.contextJson ?? {}) as {
+        tableCode?: string | null;
+        rowNo?: string | null;
+        rowLabel?: string | null;
+        colNo?: string | null;
+      };
+      const normalizedTableCode = normalizeArchiveText(context.tableCode);
+      const tableId = normalizedTableCode ? createArchiveTableId("F47", normalizedTableCode) : null;
+
+      if (!tableId) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const schemaRowLookup = schemaRowLookupByTableId.get(tableId) ?? null;
+      const targetRowKey =
+        schemaRowLookup?.byPrintedNumber.get(normalizeArchiveText(context.rowNo)) ??
+        schemaRowLookup?.byCode.get(normalizeArchiveCode(context.rowLabel)) ??
+        null;
+      const rawColumnRank = context.colNo
+        ? rawColumnRankByTableCode.get(normalizedTableCode ?? "")?.get(normalizeArchiveText(context.colNo))
+        : null;
+      const targetColumnKey =
+        rawColumnRank && schemaColumnKeyByRankByTableId.get(tableId)
+          ? schemaColumnKeyByRankByTableId.get(tableId)?.get(rawColumnRank) ?? null
+          : null;
+
+      if (!targetColumnKey) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      const matchedField =
+        (targetRowKey
+          ? fieldByCompositeKey.get(`${tableId}::${targetRowKey}::${targetColumnKey}`) ?? null
+          : null) ??
+        singleRowFieldByTableAndColumn.get(`${tableId}::${targetColumnKey}`) ??
+        null;
+
+      if (!matchedField) {
+        fileUnmatched += 1;
+        continue;
+      }
+
+      matchedEntries.set(matchedField.id, {
+        fieldId: matchedField.id,
+        valueText: fieldValue.valueText ?? null,
+        valueNumber:
+          typeof fieldValue.valueNumber === "object" && fieldValue.valueNumber !== null
+            ? Number(fieldValue.valueNumber)
+            : (fieldValue.valueNumber as number | null),
+        contextJson: fieldValue.contextJson,
+      });
+    }
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.submissionValue.deleteMany({
+          where: {
+            submissionId: submission.id,
+          },
+        });
+
+        const values = Array.from(matchedEntries.values());
+        for (const valueChunk of chunkArray(values, 1000)) {
+          if (valueChunk.length === 0) {
+            continue;
+          }
+
+          await tx.submissionValue.createMany({
+            data: valueChunk.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueJson: {
+                archiveMapping: {
+                  strategy: "f47-pilot-table-row-col",
+                  importedAt: new Date().toISOString(),
+                  sourceImportFileId: file.id,
+                  sourceDoc: file.storagePath,
+                  contextText: JSON.stringify(entry.contextJson ?? null),
+                },
+              },
+            })),
+          });
+        }
+
+        await tx.submission.update({
+          where: {
+            id: submission.id,
+          },
+          data: {
+            reviewComment:
+              `Пилотный auto-mapping F47: ${matchedEntries.size} значений сопоставлено, ` +
               `${fileUnmatched} значений требуют ручной проверки. Источник: ${file.storagePath}`,
           },
         });

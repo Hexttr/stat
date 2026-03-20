@@ -36,50 +36,85 @@ export default async function AdminArchivePage({
 }) {
   await requireSuperadmin();
 
-  const [params, subjects, docScopeEntries, regions, formTypes, versions, batch, importFiles] =
-    await Promise.all([
-      searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
-      loadHandoffSubjects(),
-      loadHandoffDocScopeEntries(),
-      prisma.region.findMany({
-        orderBy: { fullName: "asc" },
-      }),
-      prisma.formType.findMany({
-        orderBy: { code: "asc" },
-      }),
-      prisma.formTemplateVersion.findMany({
-        include: {
-          template: {
-            include: {
-              formType: true,
-            },
-          },
-          reportingYear: true,
-        },
-      }),
-      prisma.importBatch.findUnique({
-        where: { id: HANDOFF_BATCH_NAME },
-        include: {
-          files: {
-            include: {
-              formType: true,
-              region: true,
-              reportingYear: true,
-            },
+  const [
+    params,
+    subjects,
+    docScopeEntries,
+    regions,
+    formTypes,
+    versions,
+    batch,
+    importFiles,
+    submissionCoverageRows,
+  ] = await Promise.all([
+    searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
+    loadHandoffSubjects(),
+    loadHandoffDocScopeEntries(),
+    prisma.region.findMany({
+      orderBy: { fullName: "asc" },
+    }),
+    prisma.formType.findMany({
+      orderBy: { code: "asc" },
+    }),
+    prisma.formTemplateVersion.findMany({
+      include: {
+        template: {
+          include: {
+            formType: true,
           },
         },
-      }),
-      prisma.importFile.findMany({
-        where: {
-          batchId: HANDOFF_BATCH_NAME,
+        reportingYear: true,
+      },
+    }),
+    prisma.importBatch.findUnique({
+      where: { id: HANDOFF_BATCH_NAME },
+      include: {
+        files: {
+          include: {
+            formType: true,
+            region: true,
+            reportingYear: true,
+          },
         },
-        include: {
-          formType: true,
-          region: true,
-          reportingYear: true,
-        },
-      }),
-    ]);
+      },
+    }),
+    prisma.importFile.findMany({
+      where: {
+        batchId: HANDOFF_BATCH_NAME,
+      },
+      include: {
+        formType: true,
+        region: true,
+        reportingYear: true,
+      },
+    }),
+    prisma.$queryRaw<
+      Array<{
+        year: number;
+        formCode: string;
+        regionSubmissions: bigint;
+        mappedSubmissions: bigint;
+        mappedValues: bigint;
+      }>
+    >`
+      select
+        ry.year as year,
+        ft.code as "formCode",
+        count(distinct s.id) filter (where org.type = 'REGION_CENTER') as "regionSubmissions",
+        count(distinct case when org.type = 'REGION_CENTER' and sv.id is not null then s.id end) as "mappedSubmissions",
+        count(sv.id) filter (where org.type = 'REGION_CENTER') as "mappedValues"
+      from "Submission" s
+      join "FormAssignment" a on a.id = s."assignmentId"
+      join "Organization" org on org.id = s."organizationId"
+      join "FormTemplateVersion" v on v.id = a."templateVersionId"
+      join "FormTemplate" t on t.id = v."templateId"
+      join "FormType" ft on ft.id = t."formTypeId"
+      join "ReportingYear" ry on ry.id = a."reportingYearId"
+      left join "SubmissionValue" sv on sv."submissionId" = s.id
+      where ry.year between 2019 and 2024
+      group by ry.year, ft.code
+    `,
+  ]);
 
   const synced = parseNotice(params.synced, 4);
   const registryImported = parseNotice(params.registryImported, 5);
@@ -103,15 +138,45 @@ export default async function AdminArchivePage({
     const payload = file.extractedPayload as { totalValues?: number } | null;
     return sum + (payload?.totalValues ?? 0);
   }, 0);
+  const submissionCoverageByKey = new Map(
+    submissionCoverageRows.map((row) => [
+      `${row.year}-${row.formCode}`,
+      {
+        regionSubmissions: Number(row.regionSubmissions),
+        mappedSubmissions: Number(row.mappedSubmissions),
+        mappedValues: Number(row.mappedValues),
+      },
+    ]),
+  );
 
   const matrixRows = targetYears.flatMap((year) =>
     formTypes.map((formType) => {
+      const filesForSlot = importFiles.filter(
+        (file) => file.reportingYear?.year === year && file.formType?.code === formType.code,
+      );
+      const extractedFilesForSlot = filesForSlot.filter((file) => file.status === "EXTRACTED");
+      const extractedRegionIds = new Set(
+        extractedFilesForSlot
+          .map((file) => file.regionId)
+          .filter((regionId): regionId is string => Boolean(regionId)),
+      );
+      const duplicateSubjectFiles =
+        extractedFilesForSlot.filter((file) => file.regionId).length - extractedRegionIds.size;
+      const nullRegionFiles = extractedFilesForSlot.filter((file) => !file.regionId).length;
+      const stagedValues = extractedFilesForSlot.reduce((sum, file) => {
+        const payload = file.extractedPayload as { totalValues?: number } | null;
+        return sum + (payload?.totalValues ?? 0);
+      }, 0);
+      const coverage =
+        submissionCoverageByKey.get(`${year}-${formType.code}`) ?? {
+          regionSubmissions: 0,
+          mappedSubmissions: 0,
+          mappedValues: 0,
+        };
       const handoffDocs = docScopeEntries.filter(
         (entry) => entry.year === year && entry.form === formType.code,
       ).length;
-      const importedDocs = importFiles.filter(
-        (file) => file.reportingYear?.year === year && file.formType?.code === formType.code,
-      ).length;
+      const importedDocs = filesForSlot.length;
       const versionCount = versions.filter(
         (version) =>
           version.reportingYear.year === year && version.template.formType.code === formType.code,
@@ -123,9 +188,26 @@ export default async function AdminArchivePage({
         formCode: formType.code,
         handoffDocs,
         importedDocs,
+        extractedDocs: extractedFilesForSlot.length,
+        distinctRegions: extractedRegionIds.size,
+        duplicateSubjectFiles,
+        nullRegionFiles,
+        stagedValues,
         versionCount,
+        regionSubmissions: coverage.regionSubmissions,
+        mappedSubmissions: coverage.mappedSubmissions,
+        mappedValues: coverage.mappedValues,
       };
     }),
+  );
+  const fullyCoveredRows = matrixRows.filter(
+    (row) => row.distinctRegions > 0 && row.mappedSubmissions >= row.distinctRegions,
+  ).length;
+  const totalMappedSubmissions = matrixRows.reduce((sum, row) => sum + row.mappedSubmissions, 0);
+  const totalSubmissionValues = matrixRows.reduce((sum, row) => sum + row.mappedValues, 0);
+  const totalArchiveAnomalies = matrixRows.reduce(
+    (sum, row) => sum + row.duplicateSubjectFiles + row.nullRegionFiles,
+    0,
   );
 
   const pilotOptions = formTypes.map((formType) => formType.code);
@@ -206,6 +288,10 @@ export default async function AdminArchivePage({
             { label: "Файлов в registry", value: importFiles.length },
             { label: "EXTRACTED файлов", value: extractedFiles },
             { label: "Значений в staging", value: extractedValues },
+            { label: "Полных слотов форма/год", value: fullyCoveredRows },
+            { label: "Замапленных submission", value: totalMappedSubmissions },
+            { label: "SubmissionValue в архиве", value: totalSubmissionValues },
+            { label: "Дубли/без региона", value: totalArchiveAnomalies },
           ].map((metric) => (
             <article
               key={metric.label}
@@ -528,8 +614,9 @@ export default async function AdminArchivePage({
           <div>
             <h2 className="text-2xl font-semibold text-slate-950">Покрытие по годам и формам</h2>
             <p className="mt-2 max-w-3xl text-slate-600">
-              Таблица показывает, сколько документов найдено в handoff, сколько уже попало в
-              локальный registry и есть ли годовая версия формы в приложении.
+              Таблица показывает не только handoff/registry, но и фактическое покрытие по
+              регионам. Процент считается по уникальным `regionId` среди `EXTRACTED`, поэтому
+              дубли файлов и записи без региона не искажают статус загрузки.
             </p>
           </div>
           <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -542,16 +629,26 @@ export default async function AdminArchivePage({
           <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
             <thead>
               <tr>
-                {["Год", "Форма", "Документов handoff", "В registry", "Версий в приложении"].map(
-                  (label) => (
-                    <th
-                      key={label}
-                      className="border-b border-slate-200 bg-slate-50 px-4 py-3 font-medium text-slate-700"
-                    >
-                      {label}
-                    </th>
-                  ),
-                )}
+                {[
+                  "Год",
+                  "Форма",
+                  "Документов handoff",
+                  "В registry",
+                  "EXTRACTED",
+                  "Регионов",
+                  "Staging values",
+                  "Версии",
+                  "Submission coverage",
+                  "SubmissionValue",
+                  "Статус",
+                ].map((label) => (
+                  <th
+                    key={label}
+                    className="border-b border-slate-200 bg-slate-50 px-4 py-3 font-medium text-slate-700"
+                  >
+                    {label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -569,6 +666,29 @@ export default async function AdminArchivePage({
                   <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
                     {row.importedDocs}
                   </td>
+                  <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
+                    {row.extractedDocs}
+                  </td>
+                  <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
+                    <div className="flex flex-col gap-1">
+                      <span>{row.distinctRegions}</span>
+                      {row.duplicateSubjectFiles > 0 || row.nullRegionFiles > 0 ? (
+                        <span className="text-xs text-amber-700">
+                          {[
+                            row.duplicateSubjectFiles > 0
+                              ? `дублей: ${row.duplicateSubjectFiles}`
+                              : null,
+                            row.nullRegionFiles > 0 ? `без региона: ${row.nullRegionFiles}` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(", ")}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
+                    {row.stagedValues}
+                  </td>
                   <td className="border-b border-slate-200 px-4 py-3">
                     <span
                       className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
@@ -578,6 +698,29 @@ export default async function AdminArchivePage({
                       }`}
                     >
                       {row.versionCount > 0 ? `${row.versionCount} готово` : "Не подготовлено"}
+                    </span>
+                  </td>
+                  <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
+                    {row.mappedSubmissions}/{row.distinctRegions || row.regionSubmissions || 0}
+                  </td>
+                  <td className="border-b border-slate-200 px-4 py-3 text-slate-700">
+                    {row.mappedValues}
+                  </td>
+                  <td className="border-b border-slate-200 px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                        row.distinctRegions > 0 && row.mappedSubmissions >= row.distinctRegions
+                          ? "bg-emerald-50 text-emerald-700"
+                          : row.mappedSubmissions > 0
+                            ? "bg-amber-50 text-amber-700"
+                            : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      {row.distinctRegions > 0 && row.mappedSubmissions >= row.distinctRegions
+                        ? "Полное покрытие"
+                        : row.mappedSubmissions > 0
+                          ? "Частично"
+                          : "Не загружено"}
                     </span>
                   </td>
                 </tr>

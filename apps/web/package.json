@@ -17,7 +17,15 @@
     "archive:pilot": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pilot",
     "archive:pull-values": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pull-values",
     "archive:map-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f12",
-    "archive:enrich-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f12"
+    "archive:map-f14": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f14",
+    "archive:map-f19": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f19",
+    "archive:map-f30": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f30",
+    "archive:map-f47": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f47",
+    "archive:enrich-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f12",
+    "archive:enrich-f14": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f14",
+    "archive:enrich-f19": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f19",
+    "archive:enrich-f30": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f30",
+    "archive:enrich-f47": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts enrich-f47"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

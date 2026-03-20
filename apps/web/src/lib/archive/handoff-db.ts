@@ -41,6 +41,16 @@ export function getHandoffPool() {
   return globalForHandoffPool.handoffPool;
 }
 
+export async function closeHandoffPool() {
+  const pool = globalForHandoffPool.handoffPool;
+  if (!pool) {
+    return;
+  }
+
+  globalForHandoffPool.handoffPool = undefined;
+  await pool.end();
+}
+
 export async function assertHandoffSchemaAvailable() {
   const pool = getHandoffPool();
   const result = await pool.query<{ stg_values: string | null }>(
