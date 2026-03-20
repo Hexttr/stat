@@ -6,6 +6,9 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import {
+  ArchiveQaIssueScale,
+  ArchiveQaIssueStatus,
+  ArchiveQaIssueType,
   FormAssignmentStatus,
   FormTemplateVersionStatus,
   OrganizationType,
@@ -152,6 +155,12 @@ const regionSubmissionPayloadSchema = z.object({
   valuesJson: z.string().min(2, "Пустые данные формы."),
 });
 
+const reviewedSubmissionPayloadSchema = z.object({
+  submissionId: z.string().min(1, "Не найдена отправка формы."),
+  valuesJson: z.string().min(2, "Пустые данные формы."),
+  returnTo: z.string().trim().optional(),
+});
+
 const archivePilotImportSchema = z.object({
   formCode: z.string().trim().min(1, "Укажите код формы."),
   year: z.coerce.number().int().min(2019).max(2026),
@@ -170,6 +179,30 @@ const archiveMappingSchema = z.object({
 
 const archiveReturnToSchema = z.object({
   returnTo: z.string().trim().optional(),
+});
+
+const createArchiveQaIssueSchema = z.object({
+  importFileId: z.string().min(1, "Не найден архивный файл."),
+  submissionId: z.string().trim().optional(),
+  returnTo: z.string().trim().optional(),
+  type: z.enum([
+    ArchiveQaIssueType.REGION,
+    ArchiveQaIssueType.EXTRACTION,
+    ArchiveQaIssueType.MAPPING,
+    ArchiveQaIssueType.SCHEMA,
+    ArchiveQaIssueType.MANUAL,
+  ]),
+  scale: z.enum([
+    ArchiveQaIssueScale.SINGLE_VALUE,
+    ArchiveQaIssueScale.BLOCK,
+    ArchiveQaIssueScale.FILE,
+    ArchiveQaIssueScale.SYSTEMIC,
+  ]),
+  title: z.string().trim().min(5, "Коротко сформулируйте проблему."),
+  description: z.string().trim().min(10, "Опишите проблему чуть подробнее."),
+  rawEvidence: z.string().trim().optional(),
+  expectedResult: z.string().trim().optional(),
+  actualResult: z.string().trim().optional(),
 });
 
 const reviewSubmissionSchema = z.object({
@@ -1763,6 +1796,66 @@ export async function submitRegionSubmissionAction(formData: FormData) {
   redirect(`/admin/forms/assignments/${parsed.assignmentId}?submitted=1`);
 }
 
+export async function saveReviewedSubmissionValuesAction(formData: FormData) {
+  const parsed = reviewedSubmissionPayloadSchema.parse({
+    submissionId: formData.get("submissionId"),
+    valuesJson: formData.get("valuesJson"),
+    returnTo: formData.get("returnTo"),
+  });
+
+  const { submission } = await getScopedSubmissionForReview(parsed.submissionId);
+  const values = parseRuntimeValues(parsed.valuesJson);
+  const fieldMap = new Map(
+    submission.assignment.templateVersion.fields.map((field) => [field.key, field]),
+  );
+  const normalizedEntries = Object.entries(values)
+    .map(([fieldKey, rawValue]) => {
+      const field = fieldMap.get(fieldKey);
+      if (!field) {
+        return null;
+      }
+
+      const normalizedValue = normalizeRuntimeValue(field.fieldType, rawValue);
+      if (normalizedValue.isEmpty) {
+        return null;
+      }
+
+      return {
+        fieldId: field.id,
+        ...normalizedValue,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  await prisma.$transaction([
+    prisma.submissionValue.deleteMany({
+      where: {
+        submissionId: submission.id,
+      },
+    }),
+    ...(normalizedEntries.length > 0
+      ? [
+          prisma.submissionValue.createMany({
+            data: normalizedEntries.map((entry) => ({
+              submissionId: submission.id,
+              fieldId: entry.fieldId,
+              valueText: entry.valueText ?? undefined,
+              valueNumber: entry.valueNumber ?? undefined,
+              valueBoolean: entry.valueBoolean ?? undefined,
+              valueJson: entry.valueJson ?? undefined,
+            })),
+          }),
+        ]
+      : []),
+  ]);
+
+  revalidatePath("/admin/forms");
+  revalidatePath(`/admin/forms/review/${submission.id}`);
+  revalidatePath(`/admin/forms/assignments/${submission.assignmentId}`);
+
+  redirect(`${parsed.returnTo || `/admin/forms/review/${submission.id}`}?saved=1`);
+}
+
 export async function syncCanonicalRegionsAction(formData: FormData) {
   await requireSuperadmin();
 
@@ -1888,6 +1981,113 @@ export async function applyArchiveF12MappingAction(formData: FormData) {
         : "Не удалось применить pilot mapping F12 к региональным черновикам.";
     redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
   }
+}
+
+export async function createArchiveQaIssueAction(formData: FormData) {
+  const currentUser = await requireSuperadmin();
+
+  const parsed = createArchiveQaIssueSchema.safeParse({
+    importFileId: formData.get("importFileId"),
+    submissionId: formData.get("submissionId"),
+    returnTo: formData.get("returnTo"),
+    type: formData.get("type"),
+    scale: formData.get("scale"),
+    title: formData.get("title"),
+    description: formData.get("description"),
+    rawEvidence: formData.get("rawEvidence"),
+    expectedResult: formData.get("expectedResult"),
+    actualResult: formData.get("actualResult"),
+  });
+
+  const rawReturnTo = String(formData.get("returnTo") ?? "/admin/archive/qa");
+  const returnTo =
+    parsed.success && parsed.data.returnTo && parsed.data.returnTo.startsWith("/")
+      ? parsed.data.returnTo
+      : rawReturnTo.startsWith("/")
+        ? rawReturnTo
+        : "/admin/archive/qa";
+
+  if (!parsed.success) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent(
+          parsed.error.issues[0]?.message ?? "Не удалось сохранить замечание QA.",
+        )}`,
+      ),
+    );
+  }
+
+  const importFile = await prisma.importFile.findUnique({
+    where: {
+      id: parsed.data.importFileId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!importFile) {
+    redirect(
+      appendSearchParam(returnTo, `error=${encodeURIComponent("Архивный файл не найден.")}`),
+    );
+  }
+
+  let submissionId: string | null = null;
+  if (parsed.data.submissionId) {
+    const submission = await prisma.submission.findUnique({
+      where: {
+        id: parsed.data.submissionId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    submissionId = submission?.id ?? null;
+  }
+
+  await prisma.$executeRaw`
+    insert into "ArchiveQaIssue" (
+      "id",
+      "importFileId",
+      "submissionId",
+      "createdById",
+      "type",
+      "scale",
+      "status",
+      "title",
+      "description",
+      "rawEvidence",
+      "expectedResult",
+      "actualResult",
+      "createdAt",
+      "updatedAt"
+    ) values (
+      ${crypto.randomUUID()},
+      ${parsed.data.importFileId},
+      ${submissionId},
+      ${currentUser.id},
+      ${parsed.data.type}::"ArchiveQaIssueType",
+      ${parsed.data.scale}::"ArchiveQaIssueScale",
+      ${ArchiveQaIssueStatus.NEW}::"ArchiveQaIssueStatus",
+      ${parsed.data.title},
+      ${parsed.data.description},
+      ${parsed.data.rawEvidence || null},
+      ${parsed.data.expectedResult || null},
+      ${parsed.data.actualResult || null},
+      now(),
+      now()
+    )
+  `;
+
+  revalidatePath("/admin/archive/qa");
+  redirect(
+    appendSearchParam(
+      returnTo,
+      `issueCreated=${encodeURIComponent(`${parsed.data.type}|${parsed.data.scale}`)}`,
+    ),
+  );
 }
 
 export async function reviewSubmissionAction(formData: FormData) {

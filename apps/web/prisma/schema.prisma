@@ -63,6 +63,28 @@ enum ImportIssueSeverity {
   ERROR
 }
 
+enum ArchiveQaIssueType {
+  REGION
+  EXTRACTION
+  MAPPING
+  SCHEMA
+  MANUAL
+}
+
+enum ArchiveQaIssueScale {
+  SINGLE_VALUE
+  BLOCK
+  FILE
+  SYSTEMIC
+}
+
+enum ArchiveQaIssueStatus {
+  NEW
+  IN_PROGRESS
+  FIXED
+  VERIFIED
+}
+
 model User {
   id            String           @id @default(cuid())
   email         String           @unique
@@ -74,6 +96,7 @@ model User {
   submissions   Submission[]     @relation("SubmissionSubmittedBy")
   reviews       Submission[]     @relation("SubmissionReviewedBy")
   publishedFormVersions FormTemplateVersion[] @relation("FormVersionPublishedBy")
+  archiveQaIssues ArchiveQaIssue[] @relation("ArchiveQaIssueCreatedBy")
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 }
@@ -243,6 +266,7 @@ model Submission {
   submittedBy         User?             @relation("SubmissionSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
   reviewedBy          User?             @relation("SubmissionReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   values              SubmissionValue[]
+  archiveQaIssues     ArchiveQaIssue[]
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
@@ -377,6 +401,7 @@ model ImportFile {
   reportingYear     ReportingYear?     @relation(fields: [reportingYearId], references: [id], onDelete: SetNull)
   fieldValues       ImportFieldValue[]
   issues            ImportIssue[]
+  archiveQaIssues   ArchiveQaIssue[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 }
@@ -406,6 +431,29 @@ model ImportIssue {
   importFile        ImportFile           @relation(fields: [importFileId], references: [id], onDelete: Cascade)
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
+}
+
+model ArchiveQaIssue {
+  id                String               @id @default(cuid())
+  importFileId      String
+  submissionId      String?
+  createdById       String?
+  type              ArchiveQaIssueType
+  scale             ArchiveQaIssueScale
+  status            ArchiveQaIssueStatus @default(NEW)
+  title             String
+  description       String
+  rawEvidence       String?
+  expectedResult    String?
+  actualResult      String?
+  importFile        ImportFile           @relation(fields: [importFileId], references: [id], onDelete: Cascade)
+  submission        Submission?          @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  createdBy         User?                @relation("ArchiveQaIssueCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@index([importFileId, status, createdAt])
+  @@index([submissionId])
 }
 
 model AuditLog {

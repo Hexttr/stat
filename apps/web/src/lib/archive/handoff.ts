@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { cache } from "react";
 
 type CsvRow = Record<string, string>;
 
@@ -137,7 +138,7 @@ function getSamplePath(...parts: string[]) {
   return path.join(getHandoffRoot(), "04_samples", ...parts);
 }
 
-export async function loadHandoffSubjects() {
+export const loadHandoffSubjects = cache(async function loadHandoffSubjects() {
   const rows = await readCsvRows(getSamplePath("rf_subjects_oktmo.csv"));
 
   return rows.map(
@@ -148,9 +149,9 @@ export async function loadHandoffSubjects() {
         canonicalName: titleCaseRu(row.name_match),
       }) satisfies HandoffSubject,
   );
-}
+});
 
-export async function loadHandoffScopeEntities() {
+export const loadHandoffScopeEntities = cache(async function loadHandoffScopeEntities() {
   const rows = await readCsvRows(getSamplePath("scope_entities.csv"));
 
   return rows.map(
@@ -162,9 +163,9 @@ export async function loadHandoffScopeEntities() {
         code4: row.code4 || null,
       }) satisfies HandoffScopeEntity,
   );
-}
+});
 
-export async function loadHandoffDocScopeEntries() {
+export const loadHandoffDocScopeEntries = cache(async function loadHandoffDocScopeEntries() {
   const rows = await readCsvRows(getSamplePath("v_doc_scope_canon.csv"));
 
   return rows.map(
@@ -186,7 +187,7 @@ export async function loadHandoffDocScopeEntries() {
         updatedAt: row.updated_at || null,
       }) satisfies HandoffDocScopeEntry,
   );
-}
+});
 
 export function getCanonicalRegionPayload(subject: HandoffSubject) {
   const fullName = subject.canonicalName;

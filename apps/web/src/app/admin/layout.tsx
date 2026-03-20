@@ -28,7 +28,7 @@ export default async function AdminLayout({
             </div>
           </Link>
 
-          <nav className="mt-10 space-y-2">
+          <nav className="mt-10 space-y-1">
             <NavLink href="/admin">Статистика</NavLink>
             <NavLink href="/admin/events">События</NavLink>
             <NavLink href="/admin/prof-exams">Проф.осмотры</NavLink>
@@ -41,7 +41,7 @@ export default async function AdminLayout({
             <p className="px-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
               Управление
             </p>
-            <nav className="mt-3 space-y-2">
+            <nav className="mt-3 space-y-1">
               <NavLink href="/admin/forms">Формы</NavLink>
               {isSuperadmin ? <NavLink href="/admin/archive">Архив</NavLink> : null}
               {isSuperadmin || isRegionAdmin ? <NavLink href="/admin/operators">Операторы</NavLink> : null}

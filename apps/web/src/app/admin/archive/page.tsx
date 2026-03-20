@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import {
   applyArchiveF12MappingAction,
   ensureArchiveYearlyFormsAction,
@@ -16,6 +18,10 @@ import { requireSuperadmin } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
 
 const targetYears = [2019, 2020, 2021, 2022, 2023, 2024];
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat("ru-RU").format(value);
+}
 
 function parseNotice(
   value: string | string[] | undefined,
@@ -42,9 +48,10 @@ export default async function AdminArchivePage({
     docScopeEntries,
     regions,
     formTypes,
-    versions,
     batch,
-    importFiles,
+    versionCountRows,
+    importMetricsRows,
+    overallImportMetrics,
     submissionCoverageRows,
   ] = await Promise.all([
     searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
@@ -56,38 +63,100 @@ export default async function AdminArchivePage({
     prisma.formType.findMany({
       orderBy: { code: "asc" },
     }),
-    prisma.formTemplateVersion.findMany({
-      include: {
-        template: {
-          include: {
-            formType: true,
-          },
-        },
-        reportingYear: true,
-      },
-    }),
     prisma.importBatch.findUnique({
       where: { id: HANDOFF_BATCH_NAME },
-      include: {
-        files: {
-          include: {
-            formType: true,
-            region: true,
-            reportingYear: true,
-          },
-        },
+      select: {
+        name: true,
       },
     }),
-    prisma.importFile.findMany({
-      where: {
-        batchId: HANDOFF_BATCH_NAME,
-      },
-      include: {
-        formType: true,
-        region: true,
-        reportingYear: true,
-      },
-    }),
+    prisma.$queryRaw<
+      Array<{
+        year: number;
+        formCode: string;
+        versionCount: bigint;
+      }>
+    >`
+      select
+        ry.year as year,
+        ft.code as "formCode",
+        count(*) as "versionCount"
+      from "FormTemplateVersion" v
+      join "ReportingYear" ry on ry.id = v."reportingYearId"
+      join "FormTemplate" t on t.id = v."templateId"
+      join "FormType" ft on ft.id = t."formTypeId"
+      where ry.year between 2019 and 2024
+      group by ry.year, ft.code
+    `,
+    prisma.$queryRaw<
+      Array<{
+        year: number;
+        formCode: string;
+        importedDocs: bigint;
+        extractedDocs: bigint;
+        distinctRegions: bigint;
+        duplicateSubjectFiles: bigint;
+        nullRegionFiles: bigint;
+        stagedValues: bigint;
+      }>
+    >`
+      select
+        ry.year as year,
+        ft.code as "formCode",
+        count(*) as "importedDocs",
+        count(*) filter (where f.status = 'EXTRACTED') as "extractedDocs",
+        count(distinct f."regionId") filter (
+          where f.status = 'EXTRACTED' and f."regionId" is not null
+        ) as "distinctRegions",
+        (
+          count(*) filter (where f.status = 'EXTRACTED' and f."regionId" is not null)
+          - count(distinct f."regionId") filter (
+            where f.status = 'EXTRACTED' and f."regionId" is not null
+          )
+        ) as "duplicateSubjectFiles",
+        count(*) filter (
+          where f.status = 'EXTRACTED' and f."regionId" is null
+        ) as "nullRegionFiles",
+        coalesce(
+          sum(
+            case
+              when f.status = 'EXTRACTED'
+              then coalesce((f."extractedPayload"->>'totalValues')::bigint, 0)
+              else 0
+            end
+          ),
+          0
+        ) as "stagedValues"
+      from "ImportFile" f
+      join "ReportingYear" ry on ry.id = f."reportingYearId"
+      join "FormType" ft on ft.id = f."formTypeId"
+      where f."batchId" = ${HANDOFF_BATCH_NAME}
+      group by ry.year, ft.code
+    `,
+    prisma.$queryRaw<
+      Array<{
+        importedDocs: bigint;
+        importedSubjectFiles: bigint;
+        extractedFiles: bigint;
+        extractedValues: bigint;
+      }>
+    >`
+      select
+        count(*) as "importedDocs",
+        count(*) filter (where "regionId" is not null) as "importedSubjectFiles",
+        count(*) filter (where status = 'EXTRACTED') as "extractedFiles",
+        coalesce(
+          sum(
+            case
+              when status = 'EXTRACTED'
+              then coalesce(("extractedPayload"->>'totalValues')::bigint, 0)
+              else 0
+            end
+          ),
+          0
+        ) as "extractedValues"
+      from "ImportFile"
+      where "batchId" = ${HANDOFF_BATCH_NAME}
+    `,
     prisma.$queryRaw<
       Array<{
         year: number;
@@ -127,17 +196,31 @@ export default async function AdminArchivePage({
   const regionNameSet = new Set(
     regions.map((region) => normalizeCanonText(region.fullName)).filter(Boolean),
   );
+  const handoffDocCountByKey = new Map<string, number>();
+  let subjectEntries = 0;
+  let scopeEntries = 0;
+  for (const entry of docScopeEntries) {
+    const key = `${entry.year}-${entry.form}`;
+    handoffDocCountByKey.set(key, (handoffDocCountByKey.get(key) ?? 0) + 1);
+    if (entry.resolvedKind === "SUBJECT") {
+      subjectEntries += 1;
+    } else {
+      scopeEntries += 1;
+    }
+  }
   const matchedCanonicalSubjects = subjects.filter((subject) =>
     regionNameSet.has(normalizeCanonText(subject.canonicalName)),
   ).length;
-  const subjectEntries = docScopeEntries.filter((entry) => entry.resolvedKind === "SUBJECT");
-  const scopeEntries = docScopeEntries.filter((entry) => entry.resolvedKind === "SCOPE");
-  const importedSubjectFiles = importFiles.filter((file) => file.regionId).length;
-  const extractedFiles = importFiles.filter((file) => file.status === "EXTRACTED").length;
-  const extractedValues = importFiles.reduce((sum, file) => {
-    const payload = file.extractedPayload as { totalValues?: number } | null;
-    return sum + (payload?.totalValues ?? 0);
-  }, 0);
+  const totals = overallImportMetrics[0] ?? {
+    importedDocs: BigInt(0),
+    importedSubjectFiles: BigInt(0),
+    extractedFiles: BigInt(0),
+    extractedValues: BigInt(0),
+  };
+  const importedSubjectFiles = Number(totals.importedSubjectFiles);
+  const extractedFiles = Number(totals.extractedFiles);
+  const extractedValues = Number(totals.extractedValues);
+  const totalImportFiles = Number(totals.importedDocs);
   const submissionCoverageByKey = new Map(
     submissionCoverageRows.map((row) => [
       `${row.year}-${row.formCode}`,
@@ -148,39 +231,43 @@ export default async function AdminArchivePage({
       },
     ]),
   );
+  const versionCountByKey = new Map(
+    versionCountRows.map((row) => [`${row.year}-${row.formCode}`, Number(row.versionCount)]),
+  );
+  const importMetricsByKey = new Map(
+    importMetricsRows.map((row) => [
+      `${row.year}-${row.formCode}`,
+      {
+        importedDocs: Number(row.importedDocs),
+        extractedDocs: Number(row.extractedDocs),
+        distinctRegions: Number(row.distinctRegions),
+        duplicateSubjectFiles: Number(row.duplicateSubjectFiles),
+        nullRegionFiles: Number(row.nullRegionFiles),
+        stagedValues: Number(row.stagedValues),
+      },
+    ]),
+  );
 
   const matrixRows = targetYears.flatMap((year) =>
     formTypes.map((formType) => {
-      const filesForSlot = importFiles.filter(
-        (file) => file.reportingYear?.year === year && file.formType?.code === formType.code,
-      );
-      const extractedFilesForSlot = filesForSlot.filter((file) => file.status === "EXTRACTED");
-      const extractedRegionIds = new Set(
-        extractedFilesForSlot
-          .map((file) => file.regionId)
-          .filter((regionId): regionId is string => Boolean(regionId)),
-      );
-      const duplicateSubjectFiles =
-        extractedFilesForSlot.filter((file) => file.regionId).length - extractedRegionIds.size;
-      const nullRegionFiles = extractedFilesForSlot.filter((file) => !file.regionId).length;
-      const stagedValues = extractedFilesForSlot.reduce((sum, file) => {
-        const payload = file.extractedPayload as { totalValues?: number } | null;
-        return sum + (payload?.totalValues ?? 0);
-      }, 0);
+      const importMetrics =
+        importMetricsByKey.get(`${year}-${formType.code}`) ?? {
+          importedDocs: 0,
+          extractedDocs: 0,
+          distinctRegions: 0,
+          duplicateSubjectFiles: 0,
+          nullRegionFiles: 0,
+          stagedValues: 0,
+        };
       const coverage =
         submissionCoverageByKey.get(`${year}-${formType.code}`) ?? {
           regionSubmissions: 0,
           mappedSubmissions: 0,
           mappedValues: 0,
         };
-      const handoffDocs = docScopeEntries.filter(
-        (entry) => entry.year === year && entry.form === formType.code,
-      ).length;
-      const importedDocs = filesForSlot.length;
-      const versionCount = versions.filter(
-        (version) =>
-          version.reportingYear.year === year && version.template.formType.code === formType.code,
-      ).length;
+      const handoffDocs = handoffDocCountByKey.get(`${year}-${formType.code}`) ?? 0;
+      const importedDocs = importMetrics.importedDocs;
+      const versionCount = versionCountByKey.get(`${year}-${formType.code}`) ?? 0;
 
       return {
         key: `${year}-${formType.code}`,
@@ -188,11 +275,11 @@ export default async function AdminArchivePage({
         formCode: formType.code,
         handoffDocs,
         importedDocs,
-        extractedDocs: extractedFilesForSlot.length,
-        distinctRegions: extractedRegionIds.size,
-        duplicateSubjectFiles,
-        nullRegionFiles,
-        stagedValues,
+        extractedDocs: importMetrics.extractedDocs,
+        distinctRegions: importMetrics.distinctRegions,
+        duplicateSubjectFiles: importMetrics.duplicateSubjectFiles,
+        nullRegionFiles: importMetrics.nullRegionFiles,
+        stagedValues: importMetrics.stagedValues,
         versionCount,
         regionSubmissions: coverage.regionSubmissions,
         mappedSubmissions: coverage.mappedSubmissions,
@@ -209,6 +296,63 @@ export default async function AdminArchivePage({
     (sum, row) => sum + row.duplicateSubjectFiles + row.nullRegionFiles,
     0,
   );
+  const dashboardMetrics = [
+    {
+      label: "Субъекты из handoff",
+      value: subjects.length,
+      help: "Сколько канонических субъектов РФ пришло из handoff-источника.",
+    },
+    {
+      label: "Совпало с Region",
+      value: matchedCanonicalSubjects,
+      help: "Сколько субъектов из handoff уже корректно сопоставлено с регионами приложения.",
+    },
+    {
+      label: "Документы SUBJECT",
+      value: subjectEntries,
+      help: "Архивные документы уровня конкретного региона. Это основной слой для исторической загрузки.",
+    },
+    {
+      label: "Документы SCOPE",
+      value: scopeEntries,
+      help: "Агрегированные документы: округа, своды и другие контуры вне одного региона.",
+    },
+    {
+      label: "Файлов в registry",
+      value: totalImportFiles,
+      help: "Сколько записей об архивных документах уже занесено во внутренний registry приложения.",
+    },
+    {
+      label: "EXTRACTED файлов",
+      value: extractedFiles,
+      help: "Сколько файлов уже прошло этап извлечения и готово к импорту значений и маппингу.",
+    },
+    {
+      label: "Значений в staging",
+      value: extractedValues,
+      help: "Это сырой промежуточный слой ImportFieldValue. Он хранит почти все извлеченные ячейки до фильтрации и поэтому всегда сильно больше финальных значений.",
+    },
+    {
+      label: "Полных слотов форма/год",
+      value: fullyCoveredRows,
+      help: "Сколько комбинаций форма+год уже имеют полное региональное покрытие по доступным EXTRACTED-данным.",
+    },
+    {
+      label: "Замапленных submission",
+      value: totalMappedSubmissions,
+      help: "Сколько региональных исторических черновиков уже реально наполнено данными.",
+    },
+    {
+      label: "SubmissionValue в архиве",
+      value: totalSubmissionValues,
+      help: "Сколько финальных значений уже приземлено в рабочую модель приложения.",
+    },
+    {
+      label: "Дубли/без региона",
+      value: totalArchiveAnomalies,
+      help: "Проблемные записи staging: дубли одного региона и файлы, где регион не определился.",
+    },
+  ];
 
   const pilotOptions = formTypes.map((formType) => formType.code);
 
@@ -229,8 +373,16 @@ export default async function AdminArchivePage({
               региональные заготовки для последующего заполнения и маппинга значений.
             </p>
           </div>
-          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            Batch: {batch?.name ?? HANDOFF_BATCH_NAME}
+          <div className="flex flex-col items-start gap-3 xl:items-end">
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Batch: {batch?.name ?? HANDOFF_BATCH_NAME}
+            </div>
+            <Link
+              href="/admin/archive/qa"
+              className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              Открыть архивный QA
+            </Link>
           </div>
         </div>
 
@@ -280,25 +432,26 @@ export default async function AdminArchivePage({
         ) : null}
 
         <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-          {[
-            { label: "Субъекты из handoff", value: subjects.length },
-            { label: "Совпало с Region", value: matchedCanonicalSubjects },
-            { label: "Документы SUBJECT", value: subjectEntries.length },
-            { label: "Документы SCOPE", value: scopeEntries.length },
-            { label: "Файлов в registry", value: importFiles.length },
-            { label: "EXTRACTED файлов", value: extractedFiles },
-            { label: "Значений в staging", value: extractedValues },
-            { label: "Полных слотов форма/год", value: fullyCoveredRows },
-            { label: "Замапленных submission", value: totalMappedSubmissions },
-            { label: "SubmissionValue в архиве", value: totalSubmissionValues },
-            { label: "Дубли/без региона", value: totalArchiveAnomalies },
-          ].map((metric) => (
+          {dashboardMetrics.map((metric) => (
             <article
               key={metric.label}
               className="rounded-3xl border border-[#2e78be] bg-[#1f67ab] p-5 text-white"
             >
-              <p className="text-sm text-blue-100">{metric.label}</p>
-              <p className="mt-3 text-3xl font-semibold">{metric.value}</p>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-blue-100">{metric.label}</p>
+                <details className="group relative shrink-0">
+                  <summary
+                    aria-label={`Пояснение к метрике ${metric.label}`}
+                    className="flex h-6 w-6 cursor-pointer list-none items-center justify-center rounded-full border border-white/35 bg-white/10 text-xs font-semibold text-white transition hover:bg-white/20"
+                  >
+                    ?
+                  </summary>
+                  <div className="absolute right-0 z-10 mt-2 w-64 rounded-2xl bg-white p-3 text-xs leading-5 text-slate-700 shadow-2xl ring-1 ring-slate-200">
+                    {metric.help}
+                  </div>
+                </details>
+              </div>
+              <p className="mt-3 text-3xl font-semibold">{formatCount(metric.value)}</p>
             </article>
           ))}
         </div>
@@ -620,7 +773,7 @@ export default async function AdminArchivePage({
             </p>
           </div>
           <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            Файлов в batch: {batch?.files.length ?? 0}, subject-level в registry:{" "}
+            Файлов в batch: {totalImportFiles}, subject-level в registry:{" "}
             {importedSubjectFiles}
           </div>
         </div>

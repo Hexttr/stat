@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { reviewSubmissionAction } from "@/app/admin/actions";
-import { RuntimeFormRenderer } from "@/components/forms/runtime-form-renderer";
+import {
+  reviewSubmissionAction,
+  saveReviewedSubmissionValuesAction,
+} from "@/app/admin/actions";
+import { ReviewEditableSubmissionForm } from "@/app/admin/forms/review/review-editable-submission-form";
 import {
   OrganizationType,
   RoleType,
@@ -228,6 +231,7 @@ export default async function AdminSubmissionReviewPage({
     fields: submission.assignment.templateVersion.fields,
     values: submission.values,
   });
+  const saved = resolvedSearchParams.saved === "1";
   const updated = resolvedSearchParams.updated === "1";
   const error =
     typeof resolvedSearchParams.error === "string"
@@ -286,6 +290,11 @@ export default async function AdminSubmissionReviewPage({
         {updated ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Статус проверки обновлен.
+          </p>
+        ) : null}
+        {saved ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Изменения в значениях формы сохранены.
           </p>
         ) : null}
 
@@ -391,7 +400,23 @@ export default async function AdminSubmissionReviewPage({
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <RuntimeFormRenderer schema={schema} values={values} readOnly />
+        <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-950">Данные формы</h2>
+            <p className="mt-2 max-w-3xl text-slate-600">
+              Здесь можно исправить значения прямо в текущем `Submission`, сохранить правки и
+              затем принять или вернуть форму без перехода на другой экран.
+            </p>
+          </div>
+        </div>
+        <ReviewEditableSubmissionForm
+          submissionId={submission.id}
+          returnTo={`/admin/forms/review/${submission.id}`}
+          schema={schema}
+          initialValues={values}
+          saveAction={saveReviewedSubmissionValuesAction}
+          errorMessage={error}
+        />
       </section>
     </div>
   );
