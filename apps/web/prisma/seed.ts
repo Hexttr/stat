@@ -397,11 +397,13 @@ async function seedSuperadmin() {
     where: { email: adminEmail },
     update: {
       fullName: "Суперадминистратор",
+      loginCode: "admin",
       passwordHash,
       isActive: true,
     },
     create: {
       email: adminEmail,
+      loginCode: "admin",
       fullName: "Суперадминистратор",
       passwordHash,
       isActive: true,
@@ -512,11 +514,13 @@ async function seedDemoAccessAndAssignments() {
     },
     update: {
       fullName: "Региональный администратор Москва",
+      loginCode: "moscow-admin",
       passwordHash: regionAdminPasswordHash,
       isActive: true,
     },
     create: {
       email: process.env.DEMO_REGION_ADMIN_EMAIL ?? "region-admin@stat.local",
+      loginCode: "moscow-admin",
       fullName: "Региональный администратор Москва",
       passwordHash: regionAdminPasswordHash,
       isActive: true,
@@ -529,11 +533,13 @@ async function seedDemoAccessAndAssignments() {
     },
     update: {
       fullName: "Оператор Москва",
+      loginCode: "moscow-operator",
       passwordHash: operatorPasswordHash,
       isActive: true,
     },
     create: {
       email: process.env.DEMO_OPERATOR_EMAIL ?? "operator@stat.local",
+      loginCode: "moscow-operator",
       fullName: "Оператор Москва",
       passwordHash: operatorPasswordHash,
       isActive: true,

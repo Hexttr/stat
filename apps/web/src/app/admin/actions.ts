@@ -45,6 +45,12 @@ import {
 } from "@/lib/form-builder/legacy-import";
 import { projectSchemaToFields } from "@/lib/form-builder/projection";
 import { prisma } from "@/lib/prisma";
+import {
+  createEmailLocalPartCandidate,
+  encryptProvisionedPassword,
+  generateSecurePassword,
+  normalizeLoginCode,
+} from "@/lib/credentials";
 import { SUBJECT_REGION_WHERE } from "@/lib/regions";
 
 const createUserSchema = z.object({
@@ -219,6 +225,10 @@ const reviewSubmissionSchema = z.object({
   returnTo: z.string().trim().optional(),
 });
 
+const credentialBatchSchema = z.object({
+  title: z.string().trim().optional(),
+});
+
 function appendSearchParam(url: string, param: string) {
   const [base, hash] = url.split("#");
   const separator = base.includes("?") ? "&" : "?";
@@ -242,6 +252,72 @@ function parseRuntimeValues(rawJson: string) {
       return [key, ""];
     }),
   ) satisfies RuntimeValueMap;
+}
+
+async function ensureUniqueLoginCode(baseValue: string, excludeUserId?: string) {
+  const normalizedBase = normalizeLoginCode(baseValue) || "user";
+  let candidate = normalizedBase;
+  let suffix = 2;
+
+  while (true) {
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        loginCode: candidate,
+        ...(excludeUserId
+          ? {
+              NOT: {
+                id: excludeUserId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingUser) {
+      return candidate;
+    }
+
+    candidate = `${normalizedBase}-${suffix}`;
+    suffix += 1;
+  }
+}
+
+async function ensureUniqueSyntheticEmail(baseValue: string, excludeUserId?: string) {
+  const localBase = createEmailLocalPartCandidate(baseValue);
+  let candidate = `${localBase}@stat.local`;
+  let suffix = 2;
+
+  while (true) {
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        email: candidate,
+        ...(excludeUserId
+          ? {
+              NOT: {
+                id: excludeUserId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingUser) {
+      return candidate;
+    }
+
+    candidate = `${localBase}-${suffix}@stat.local`;
+    suffix += 1;
+  }
+}
+
+function getEmailLocalBase(email: string) {
+  return email.split("@")[0] ?? email;
 }
 
 async function getScopedOperator(currentUserId: string, operatorId: string) {
@@ -732,10 +808,12 @@ export async function createUserAction(formData: FormData) {
   }
 
   const passwordHash = await hash(parsed.data.password, 10);
+  const loginCode = await ensureUniqueLoginCode(getEmailLocalBase(parsed.data.email));
 
   const user = await prisma.user.create({
     data: {
       email: parsed.data.email,
+      loginCode,
       fullName: parsed.data.fullName,
       passwordHash,
       memberships: {
@@ -748,7 +826,7 @@ export async function createUserAction(formData: FormData) {
   });
 
   revalidatePath("/admin/users");
-  redirect(`/admin/users?created=${encodeURIComponent(user.email)}`);
+  redirect(`/admin/users?created=${encodeURIComponent(`${user.loginCode ?? ""}|${user.email}`)}`);
 }
 
 export async function createOperatorAction(formData: FormData) {
@@ -835,10 +913,12 @@ export async function createOperatorAction(formData: FormData) {
   });
 
   const passwordHash = await hash(parsed.data.password, 10);
+  const loginCode = await ensureUniqueLoginCode(getEmailLocalBase(parsed.data.email));
 
   const operator = await prisma.user.create({
     data: {
       email: parsed.data.email,
+      loginCode,
       fullName: parsed.data.fullName,
       passwordHash,
       memberships: {
@@ -854,7 +934,7 @@ export async function createOperatorAction(formData: FormData) {
   revalidatePath("/admin/operators");
   redirect(
     `/admin/operators?created=${encodeURIComponent(
-      `${operator.email}|${organization.name}|${region.fullName}`,
+      `${operator.loginCode ?? ""}|${operator.email}|${organization.name}|${region.fullName}`,
     )}`,
   );
 }
@@ -991,6 +1071,176 @@ export async function toggleOperatorActiveAction(formData: FormData) {
     `/admin/operators?statusChanged=${encodeURIComponent(
       `${updatedOperator.email}|${updatedOperator.isActive ? "enabled" : "disabled"}`,
     )}`,
+  );
+}
+
+export async function backfillUserLoginCodesAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = credentialBatchSchema.safeParse({
+    title: formData.get("title"),
+  });
+
+  if (!parsed.success) {
+    redirect("/admin/credentials?error=Не удалось подготовить логины.");
+  }
+
+  const usersWithoutLoginCode = await prisma.user.findMany({
+    where: {
+      loginCode: null,
+    },
+    include: {
+      memberships: {
+        include: {
+          organization: {
+            include: {
+              region: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+
+  let updatedCount = 0;
+
+  for (const user of usersWithoutLoginCode) {
+    const regionAdminMembership = user.memberships.find(
+      (membership) =>
+        membership.role === RoleType.REGION_ADMIN && membership.organization.region?.code,
+    );
+
+    const loginCode = await ensureUniqueLoginCode(
+      regionAdminMembership?.organization.region?.code
+        ? `${regionAdminMembership.organization.region.code.replace(/_/g, "-")}-admin`
+        : getEmailLocalBase(user.email),
+      user.id,
+    );
+
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        loginCode,
+      },
+    });
+
+    updatedCount += 1;
+  }
+
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/operators");
+  revalidatePath("/admin/credentials");
+  redirect(`/admin/credentials?loginCodesBackfilled=${updatedCount}`);
+}
+
+export async function provisionRegionAdminsBatchAction(formData: FormData) {
+  const currentUser = await requireSuperadmin();
+
+  const parsed = credentialBatchSchema.safeParse({
+    title: formData.get("title"),
+  });
+
+  if (!parsed.success) {
+    redirect("/admin/credentials?error=Не удалось подготовить batch доступов.");
+  }
+
+  const regionCenters = await prisma.organization.findMany({
+    where: {
+      type: OrganizationType.REGION_CENTER,
+      region: SUBJECT_REGION_WHERE,
+    },
+    include: {
+      region: true,
+      memberships: {
+        where: {
+          role: RoleType.REGION_ADMIN,
+        },
+        include: {
+          user: true,
+        },
+      },
+    },
+    orderBy: {
+      region: {
+        fullName: "asc",
+      },
+    },
+  });
+
+  const batchTitle =
+    parsed.data.title?.trim() ||
+    `Региональные админы ${new Date().toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+
+  const batch = await prisma.credentialProvisionBatch.create({
+    data: {
+      kind: "REGION_ADMIN_PROVISION",
+      title: batchTitle,
+      createdById: currentUser.id,
+    },
+  });
+
+  let createdCount = 0;
+  let skippedCount = 0;
+
+  for (const regionCenter of regionCenters) {
+    if (regionCenter.memberships.some((membership) => membership.user.isActive)) {
+      skippedCount += 1;
+      continue;
+    }
+
+    const baseLoginCode = `${regionCenter.region.code.replace(/_/g, "-")}-admin`;
+    const loginCode = await ensureUniqueLoginCode(baseLoginCode);
+    const email = await ensureUniqueSyntheticEmail(loginCode);
+    const password = generateSecurePassword();
+    const passwordHash = await hash(password, 10);
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        loginCode,
+        fullName: `Региональный администратор ${regionCenter.region.fullName}`,
+        passwordHash,
+        isActive: true,
+        memberships: {
+          create: {
+            organizationId: regionCenter.id,
+            role: RoleType.REGION_ADMIN,
+          },
+        },
+      },
+    });
+
+    await prisma.credentialProvisionEntry.create({
+      data: {
+        batchId: batch.id,
+        userId: user.id,
+        loginCodeSnapshot: loginCode,
+        emailSnapshot: email,
+        fullNameSnapshot: user.fullName,
+        regionNameSnapshot: regionCenter.region.fullName,
+        roleSnapshot: RoleType.REGION_ADMIN,
+        passwordEncrypted: encryptProvisionedPassword(password),
+      },
+    });
+
+    createdCount += 1;
+  }
+
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/credentials");
+  redirect(
+    `/admin/credentials?batch=${batch.id}&created=${createdCount}&skipped=${skippedCount}`,
   );
 }
 

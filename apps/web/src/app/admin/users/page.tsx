@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { RoleType } from "@/generated/prisma/client";
 import { requireSuperadmin } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
@@ -52,8 +54,9 @@ export default async function AdminUsersPage({
   ]);
 
   const params = resolvedSearchParams;
-  const created =
+  const createdRaw =
     typeof params.created === "string" ? decodeURIComponent(params.created) : null;
+  const created = createdRaw ? createdRaw.split("|") : null;
   const error =
     typeof params.error === "string" ? decodeURIComponent(params.error) : null;
 
@@ -69,11 +72,17 @@ export default async function AdminUsersPage({
             привязывать их к роли и организации. Это уже покрывает базовый
             сценарий для региональных центров и операторов.
           </p>
+          <Link
+            href="/admin/credentials"
+            className="inline-flex w-fit rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Открыть страницу доступов
+          </Link>
         </div>
 
         {created ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            Пользователь `{created}` успешно создан.
+            Пользователь создан. Логин: `{created[0] || "не назначен"}`, email: `{created[1]}`.
           </p>
         ) : null}
 
@@ -193,6 +202,7 @@ export default async function AdminUsersPage({
             <thead className="bg-slate-50">
               <tr>
                 <th className="px-4 py-3 font-medium text-slate-600">Пользователь</th>
+                <th className="px-4 py-3 font-medium text-slate-600">Логин</th>
                 <th className="px-4 py-3 font-medium text-slate-600">Роли</th>
                 <th className="px-4 py-3 font-medium text-slate-600">Статус</th>
                 <th className="px-4 py-3 font-medium text-slate-600">Создан</th>
@@ -204,6 +214,15 @@ export default async function AdminUsersPage({
                   <td className="px-4 py-4">
                     <p className="font-medium text-slate-950">{user.fullName}</p>
                     <p className="mt-1 text-slate-500">{user.email}</p>
+                  </td>
+                  <td className="px-4 py-4 text-slate-600">
+                    {user.loginCode ? (
+                      <code className="rounded-xl bg-slate-100 px-3 py-2 text-[13px] text-slate-800">
+                        {user.loginCode}
+                      </code>
+                    ) : (
+                      "Нет"
+                    )}
                   </td>
                   <td className="px-4 py-4">
                     <div className="space-y-2">

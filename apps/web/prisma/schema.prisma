@@ -88,6 +88,7 @@ enum ArchiveQaIssueStatus {
 model User {
   id            String           @id @default(cuid())
   email         String           @unique
+  loginCode     String?          @unique
   passwordHash  String?
   fullName      String
   isActive      Boolean          @default(true)
@@ -97,6 +98,8 @@ model User {
   reviews       Submission[]     @relation("SubmissionReviewedBy")
   publishedFormVersions FormTemplateVersion[] @relation("FormVersionPublishedBy")
   archiveQaIssues ArchiveQaIssue[] @relation("ArchiveQaIssueCreatedBy")
+  credentialProvisionBatches CredentialProvisionBatch[] @relation("CredentialProvisionBatchCreatedBy")
+  credentialProvisionEntries CredentialProvisionEntry[]
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 }
@@ -455,6 +458,36 @@ model ArchiveQaIssue {
 
   @@index([importFileId, status, createdAt])
   @@index([submissionId])
+}
+
+model CredentialProvisionBatch {
+  id          String                     @id @default(cuid())
+  kind        String
+  title       String
+  createdById String?
+  createdBy   User?                      @relation("CredentialProvisionBatchCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  entries     CredentialProvisionEntry[]
+  createdAt   DateTime                   @default(now())
+
+  @@index([createdAt])
+}
+
+model CredentialProvisionEntry {
+  id                 String                   @id @default(cuid())
+  batchId            String
+  userId             String
+  loginCodeSnapshot  String
+  emailSnapshot      String
+  fullNameSnapshot   String
+  regionNameSnapshot String?
+  roleSnapshot       RoleType
+  passwordEncrypted  String
+  batch              CredentialProvisionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt          DateTime                 @default(now())
+
+  @@index([batchId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model AuditLog {

@@ -16,7 +16,7 @@ export function LoginForm() {
     setError(null);
 
     const response = await signIn("credentials", {
-      email: formData.get("email"),
+      loginCode: formData.get("loginCode"),
       password: formData.get("password"),
       redirect: false,
       callbackUrl,
@@ -25,7 +25,7 @@ export function LoginForm() {
     setIsPending(false);
 
     if (!response || response.error) {
-      setError("Неверный email или пароль.");
+      setError("Неверный логин или пароль.");
       return;
     }
 
@@ -44,16 +44,16 @@ export function LoginForm() {
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium text-slate-700" htmlFor="email">
-          Email
+        <label className="text-sm font-medium text-slate-700" htmlFor="loginCode">
+          Логин
         </label>
         <input
-          id="email"
-          name="email"
-          type="email"
+          id="loginCode"
+          name="loginCode"
+          type="text"
           required
           className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-0 transition placeholder:text-slate-400 focus:border-blue-500"
-          placeholder="admin@stat.local"
+          placeholder="moskva-admin"
         />
       </div>
 

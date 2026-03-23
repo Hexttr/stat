@@ -46,12 +46,16 @@ export default async function AdminLayout({
               {isSuperadmin ? <NavLink href="/admin/archive">Архив</NavLink> : null}
               {isSuperadmin || isRegionAdmin ? <NavLink href="/admin/operators">Операторы</NavLink> : null}
               {isSuperadmin ? <NavLink href="/admin/users">Пользователи</NavLink> : null}
+              {isSuperadmin ? <NavLink href="/admin/credentials">Доступы</NavLink> : null}
             </nav>
           </div>
 
           <div className="mt-auto rounded-[1.75rem] border border-slate-200 bg-slate-50 p-4">
             <p className="text-sm font-semibold text-slate-950">{user.fullName}</p>
-            <p className="mt-1 text-sm text-slate-500">{user.email}</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {user.loginCode ? `Логин: ${user.loginCode}` : user.email}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">{user.email}</p>
             <p className="mt-2 text-xs uppercase tracking-[0.16em] text-slate-400">
               {isSuperadmin ? "Суперадмин" : isRegionAdmin ? "Региональный админ" : "Администратор"}
             </p>

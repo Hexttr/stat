@@ -6,7 +6,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 
 const credentialsSchema = z.object({
-  email: z.email(),
+  loginCode: z.string().trim().min(3),
   password: z.string().min(8),
 });
 
@@ -19,9 +19,9 @@ export const authOptions: NextAuthOptions = {
   },
   providers: [
     CredentialsProvider({
-      name: "Email and Password",
+      name: "Login Code and Password",
       credentials: {
-        email: { label: "Email", type: "email" },
+        loginCode: { label: "Login", type: "text" },
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
@@ -31,10 +31,12 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
 
-        const email = parsedCredentials.data.email.trim().toLowerCase();
+        const loginCode = parsedCredentials.data.loginCode.trim().toLowerCase();
 
-        const user = await prisma.user.findUnique({
-          where: { email },
+        const user = await prisma.user.findFirst({
+          where: {
+            OR: [{ loginCode }, { email: loginCode }],
+          },
           include: {
             memberships: {
               include: {
@@ -69,6 +71,7 @@ export const authOptions: NextAuthOptions = {
         return {
           id: user.id,
           email: user.email,
+          loginCode: user.loginCode,
           name: user.fullName,
           fullName: user.fullName,
           isActive: user.isActive,
@@ -87,6 +90,7 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        token.loginCode = user.loginCode;
         token.fullName = user.fullName;
         token.isActive = user.isActive;
         token.memberships = user.memberships;
@@ -97,6 +101,7 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.sub ?? "";
+        session.user.loginCode = token.loginCode;
         session.user.fullName = token.fullName;
         session.user.isActive = token.isActive;
         session.user.memberships = token.memberships ?? [];
