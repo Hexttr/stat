@@ -1,6 +1,7 @@
 import { RoleType } from "@/generated/prisma/client";
 import { requireSuperadmin } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
+import { SUBJECT_REGION_WHERE } from "@/lib/regions";
 import { createUserAction } from "@/app/admin/actions";
 
 function formatRole(role: RoleType) {
@@ -39,6 +40,9 @@ export default async function AdminUsersPage({
       orderBy: { createdAt: "desc" },
     }),
     prisma.organization.findMany({
+      where: {
+        region: SUBJECT_REGION_WHERE,
+      },
       include: {
         region: true,
       },

@@ -23,6 +23,14 @@ function formatCount(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
 }
 
+function extractRegionOktmoKey(region: { code: string; subjectOktmoKey: string | null }) {
+  if (region.subjectOktmoKey) {
+    return region.subjectOktmoKey;
+  }
+
+  return region.code.startsWith("OKTMO_") ? region.code.slice("OKTMO_".length) : null;
+}
+
 function parseNotice(
   value: string | string[] | undefined,
   expectedLength: number,
@@ -58,6 +66,13 @@ export default async function AdminArchivePage({
     loadHandoffSubjects(),
     loadHandoffDocScopeEntries(),
     prisma.region.findMany({
+      select: {
+        id: true,
+        code: true,
+        subjectOktmoKey: true,
+        fullName: true,
+        shortName: true,
+      },
       orderBy: { fullName: "asc" },
     }),
     prisma.formType.findMany({
@@ -185,7 +200,7 @@ export default async function AdminArchivePage({
     `,
   ]);
 
-  const synced = parseNotice(params.synced, 4);
+  const synced = parseNotice(params.synced, 5);
   const registryImported = parseNotice(params.registryImported, 5);
   const yearlyFormsReady = parseNotice(params.yearlyFormsReady, 3);
   const pilotImported = parseNotice(params.pilotImported, 6);
@@ -195,6 +210,9 @@ export default async function AdminArchivePage({
 
   const regionNameSet = new Set(
     regions.map((region) => normalizeCanonText(region.fullName)).filter(Boolean),
+  );
+  const regionOktmoKeySet = new Set(
+    regions.map((region) => extractRegionOktmoKey(region)).filter((value): value is string => Boolean(value)),
   );
   const handoffDocCountByKey = new Map<string, number>();
   let subjectEntries = 0;
@@ -208,8 +226,10 @@ export default async function AdminArchivePage({
       scopeEntries += 1;
     }
   }
-  const matchedCanonicalSubjects = subjects.filter((subject) =>
-    regionNameSet.has(normalizeCanonText(subject.canonicalName)),
+  const matchedCanonicalSubjects = subjects.filter(
+    (subject) =>
+      regionOktmoKeySet.has(subject.subjectOktmoKey) ||
+      regionNameSet.has(normalizeCanonText(subject.canonicalName)),
   ).length;
   const totals = overallImportMetrics[0] ?? {
     importedDocs: BigInt(0),
@@ -393,7 +413,7 @@ export default async function AdminArchivePage({
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Канонические регионы синхронизированы: субъектов {synced[0]}, повторно
             использовано {synced[1]}, создано новых регионов {synced[2]}, создано
-            региональных центров {synced[3]}.
+            региональных центров {synced[3]}, перепривязано архивных файлов {synced[4]}.
           </p>
         ) : null}
         {registryImported ? (

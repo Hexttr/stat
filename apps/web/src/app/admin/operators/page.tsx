@@ -11,6 +11,7 @@ import {
   requireAdminUser,
 } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
+import { getScopedSubjectRegionFilter } from "@/lib/regions";
 
 function formatRole(role: RoleType) {
   switch (role) {
@@ -34,17 +35,7 @@ export default async function AdminOperatorsPage({
   const scope = getAdminScope(currentUser);
   const isSuperadmin = hasRole(currentUser, [RoleType.SUPERADMIN]);
 
-  const regionFilter = scope.isSuperadmin
-    ? {
-        code: {
-          not: "RUSSIAN_FEDERATION",
-        },
-      }
-    : {
-        id: {
-          in: scope.manageableRegionIds ?? [],
-        },
-      };
+  const regionFilter = getScopedSubjectRegionFilter(scope);
 
   const [regions, operators, resolvedSearchParams] = await Promise.all([
     prisma.region.findMany({

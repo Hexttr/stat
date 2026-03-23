@@ -104,6 +104,7 @@ model User {
 model Region {
   id                String             @id @default(cuid())
   code              String             @unique
+  subjectOktmoKey   String?            @unique
   shortName         String             @unique
   fullName          String             @unique
   organizations     Organization[]

@@ -14,6 +14,7 @@ import { getAdminScope, hasRole, requireAdminUser } from "@/lib/access";
 import { formBuilderSchema } from "@/lib/form-builder/schema";
 import { RuntimeValueMap } from "@/lib/form-builder/runtime";
 import { prisma } from "@/lib/prisma";
+import { SUBJECT_REGION_WHERE } from "@/lib/regions";
 
 function getInitialSubmissionValues(params: {
   fields: Array<{
@@ -90,14 +91,13 @@ export default async function AdminRegionAssignmentPage({
           type: OrganizationType.REGION_CENTER,
         },
         region: scope.isSuperadmin
-          ? {
-              code: {
-                not: "RUSSIAN_FEDERATION",
-              },
-            }
+          ? SUBJECT_REGION_WHERE
           : {
               id: {
                 in: scope.manageableRegionIds ?? [],
+              },
+              subjectOktmoKey: {
+                not: null,
               },
             },
       },

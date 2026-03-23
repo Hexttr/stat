@@ -45,6 +45,7 @@ import {
 } from "@/lib/form-builder/legacy-import";
 import { projectSchemaToFields } from "@/lib/form-builder/projection";
 import { prisma } from "@/lib/prisma";
+import { SUBJECT_REGION_WHERE } from "@/lib/regions";
 
 const createUserSchema = z.object({
   fullName: z.string().trim().min(3, "Укажите ФИО."),
@@ -255,15 +256,16 @@ async function getScopedOperator(currentUserId: string, operatorId: string) {
           role: RoleType.OPERATOR,
           organization: scope.isSuperadmin
             ? {
-                region: {
-                  code: {
-                    not: "RUSSIAN_FEDERATION",
-                  },
-                },
+                region: SUBJECT_REGION_WHERE,
               }
             : {
-                regionId: {
-                  in: scope.manageableRegionIds ?? [],
+                region: {
+                  id: {
+                    in: scope.manageableRegionIds ?? [],
+                  },
+                  subjectOktmoKey: {
+                    not: null,
+                  },
                 },
               },
         },
@@ -427,6 +429,7 @@ async function getRegionCenterOrganization(regionId: string) {
     where: {
       regionId,
       type: OrganizationType.REGION_CENTER,
+      region: SUBJECT_REGION_WHERE,
     },
     include: {
       region: true,
@@ -452,14 +455,13 @@ async function getScopedRegionAssignment(regionAssignmentId: string) {
         type: OrganizationType.REGION_CENTER,
       },
       region: scope.isSuperadmin
-        ? {
-            code: {
-              not: "RUSSIAN_FEDERATION",
-            },
-          }
+        ? SUBJECT_REGION_WHERE
         : {
             id: {
               in: scope.manageableRegionIds ?? [],
+            },
+            subjectOktmoKey: {
+              not: null,
             },
           },
     },
@@ -497,14 +499,13 @@ async function getScopedRegionInputAssignment(assignmentId: string) {
         type: OrganizationType.REGION_CENTER,
       },
       region: scope.isSuperadmin
-        ? {
-            code: {
-              not: "RUSSIAN_FEDERATION",
-            },
-          }
+        ? SUBJECT_REGION_WHERE
         : {
             id: {
               in: scope.manageableRegionIds ?? [],
+            },
+            subjectOktmoKey: {
+              not: null,
             },
           },
     },
@@ -705,10 +706,21 @@ export async function createUserAction(formData: FormData) {
 
   const organization = await prisma.organization.findUnique({
     where: { id: parsed.data.organizationId },
+    include: {
+      region: {
+        select: {
+          subjectOktmoKey: true,
+        },
+      },
+    },
   });
 
   if (!organization) {
     redirect("/admin/users?error=Выбранная организация не найдена.");
+  }
+
+  if (!organization.region?.subjectOktmoKey) {
+    redirect("/admin/users?error=Для пользовательских ролей доступна только организация субъекта РФ.");
   }
 
   const existingUser = await prisma.user.findUnique({
@@ -761,10 +773,19 @@ export async function createOperatorAction(formData: FormData) {
 
   const region = await prisma.region.findUnique({
     where: { id: parsed.data.regionId },
+    select: {
+      id: true,
+      fullName: true,
+      subjectOktmoKey: true,
+    },
   });
 
   if (!region) {
     redirect("/admin/operators?error=Выбранный регион не найден.");
+  }
+
+  if (!region.subjectOktmoKey) {
+    redirect("/admin/operators?error=Оператор может быть создан только для субъекта РФ.");
   }
 
   if (
@@ -1512,11 +1533,7 @@ export async function createFormAssignmentForAllRegionsAction(formData: FormData
   const regionCenters = await prisma.organization.findMany({
     where: {
       type: OrganizationType.REGION_CENTER,
-      region: {
-        code: {
-          not: "RUSSIAN_FEDERATION",
-        },
-      },
+      region: SUBJECT_REGION_WHERE,
     },
     include: {
       region: true,
@@ -1865,12 +1882,13 @@ export async function syncCanonicalRegionsAction(formData: FormData) {
 
   const result = await syncCanonicalRegionsFromHandoff();
   revalidatePath("/admin/archive");
+  revalidatePath("/admin/archive/qa");
   revalidatePath("/admin/forms");
   revalidatePath("/admin/operators");
 
   redirect(
     `${parsed.returnTo || "/admin/archive"}?synced=${encodeURIComponent(
-      `${result.totalSubjects}|${result.reusedRegions}|${result.createdRegions}|${result.createdRegionCenters}`,
+      `${result.totalSubjects}|${result.reusedRegions}|${result.createdRegions}|${result.createdRegionCenters}|${result.backfilledImportFiles}`,
     )}`,
   );
 }

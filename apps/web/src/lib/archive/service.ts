@@ -97,20 +97,62 @@ function createImportFileId(sourceDoc: string) {
   return `handoff_${createHash("sha1").update(sourceDoc).digest("hex")}`;
 }
 
-function getRegionMatchMap(
-  regions: Array<{ id: string; code: string; fullName: string; shortName: string }>,
-) {
-  const map = new Map<
-    string,
-    { id: string; code: string; fullName: string; shortName: string }
-  >();
+type RegionLookupRecord = {
+  id: string;
+  code: string;
+  subjectOktmoKey: string | null;
+  fullName: string;
+  shortName: string;
+};
 
-  for (const region of regions) {
-    map.set(normalizeCanonText(region.fullName), region);
-    map.set(normalizeCanonText(region.shortName), region);
+function getRegionOktmoKey(region: Pick<RegionLookupRecord, "code" | "subjectOktmoKey">) {
+  if (region.subjectOktmoKey) {
+    return region.subjectOktmoKey;
   }
 
-  return map;
+  return region.code.startsWith("OKTMO_") ? region.code.slice("OKTMO_".length) : null;
+}
+
+function getRegionLookup(regions: RegionLookupRecord[]) {
+  const byName = new Map<string, RegionLookupRecord>();
+  const byOktmo = new Map<string, RegionLookupRecord>();
+
+  for (const region of regions) {
+    byName.set(normalizeCanonText(region.fullName), region);
+    byName.set(normalizeCanonText(region.shortName), region);
+
+    const subjectOktmoKey = getRegionOktmoKey(region);
+    if (subjectOktmoKey) {
+      byOktmo.set(subjectOktmoKey, region);
+    }
+  }
+
+  return {
+    byName,
+    byOktmo,
+  };
+}
+
+function findCanonicalRegion(
+  lookup: ReturnType<typeof getRegionLookup>,
+  params: {
+    subjectOktmoKey?: string | null;
+    canonicalName?: string | null;
+  },
+) {
+  if (params.subjectOktmoKey) {
+    const matchedByOktmo = lookup.byOktmo.get(params.subjectOktmoKey);
+    if (matchedByOktmo) {
+      return matchedByOktmo;
+    }
+  }
+
+  const normalizedCanonicalName = normalizeCanonText(params.canonicalName);
+  if (!normalizedCanonicalName) {
+    return null;
+  }
+
+  return lookup.byName.get(normalizedCanonicalName) ?? null;
 }
 
 function getRegionCenterName(regionFullName: string) {
@@ -853,7 +895,7 @@ export async function syncCanonicalRegionsFromHandoff() {
     }),
   ]);
 
-  const regionMatchMap = getRegionMatchMap(existingRegions);
+  const regionLookup = getRegionLookup(existingRegions);
   let createdRegions = 0;
   let updatedRegions = 0;
   let reusedRegions = 0;
@@ -861,17 +903,22 @@ export async function syncCanonicalRegionsFromHandoff() {
 
   for (const subject of subjects) {
     const payload = getCanonicalRegionPayload(subject);
-    const matchedRegion = regionMatchMap.get(payload.matchKey) ?? null;
+    const matchedRegion = findCanonicalRegion(regionLookup, {
+      subjectOktmoKey: payload.subjectOktmoKey,
+      canonicalName: payload.canonicalName,
+    });
     const regionCode = matchedRegion?.code ?? payload.code;
 
     const upsertedRegion = await prisma.region.upsert({
       where: { code: regionCode },
       update: {
+        subjectOktmoKey: payload.subjectOktmoKey,
         shortName: matchedRegion?.shortName ?? payload.shortName,
         fullName: payload.fullName,
       },
       create: {
         code: regionCode,
+        subjectOktmoKey: payload.subjectOktmoKey,
         shortName: matchedRegion?.shortName ?? payload.shortName,
         fullName: payload.fullName,
       },
@@ -912,12 +959,25 @@ export async function syncCanonicalRegionsFromHandoff() {
     }
   }
 
+  const backfilledImportFiles = await prisma.$executeRaw<number>`
+    update "ImportFile" f
+    set
+      "regionId" = r.id,
+      "updatedAt" = now()
+    from "Region" r
+    where f."batchId" = ${HANDOFF_BATCH_NAME}
+      and coalesce(f."detectedMetadata"->'handoff'->>'subjectOktmoKey', '') <> ''
+      and r."subjectOktmoKey" = f."detectedMetadata"->'handoff'->>'subjectOktmoKey'
+      and f."regionId" is distinct from r.id
+  `;
+
   return {
     totalSubjects: subjects.length,
     reusedRegions,
     createdRegions,
     updatedRegions,
     createdRegionCenters,
+    backfilledImportFiles,
   };
 }
 
@@ -929,6 +989,7 @@ export async function importHandoffArchiveRegistry() {
       select: {
         id: true,
         code: true,
+        subjectOktmoKey: true,
         fullName: true,
         shortName: true,
       },
@@ -942,7 +1003,7 @@ export async function importHandoffArchiveRegistry() {
   ]);
 
   const years = Array.from(new Set(entries.map((entry) => entry.year))).sort();
-  const regionMatchMap = getRegionMatchMap(regions);
+  const regionLookup = getRegionLookup(regions);
   const formTypeByCode = new Map(formTypes.map((formType) => [formType.code, formType]));
   const scopeByCompositeKey = new Map(
     scopeEntities.map((scope) => [`${scope.scopeType}:${scope.scopeKey}`, scope]),
@@ -996,10 +1057,12 @@ export async function importHandoffArchiveRegistry() {
   let scopeEntriesImported = 0;
 
   for (const entry of entries) {
-    const normalizedRegionName = normalizeCanonText(entry.subjectNameCanon);
     const matchedRegion =
-      entry.resolvedKind === "SUBJECT" && normalizedRegionName
-        ? regionMatchMap.get(normalizedRegionName) ?? null
+      entry.resolvedKind === "SUBJECT"
+        ? findCanonicalRegion(regionLookup, {
+            subjectOktmoKey: entry.subjectOktmoKey,
+            canonicalName: entry.subjectNameCanon,
+          })
         : null;
 
     if (entry.resolvedKind === "SUBJECT") {
