@@ -341,6 +341,33 @@ function buildRawLabel(params: {
   return [params.tableTitle, rowPart, colPart].filter(Boolean).join(" / ") || null;
 }
 
+async function runWithConcurrency<T, TResult>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<TResult>,
+) {
+  const normalizedConcurrency = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: normalizedConcurrency }, async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+
+        if (currentIndex >= items.length) {
+          break;
+        }
+
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    }),
+  );
+
+  return results;
+}
+
 export async function importCanonicalDocxArchiveRegistry() {
   const [entries, regions, formTypes, scopeEntities] = await Promise.all([
     scanCanonicalDocxArchive(),
@@ -534,6 +561,7 @@ export async function importCanonicalDocxValuesToStaging(params?: {
   limit?: number;
   offset?: number;
   matchedOnly?: boolean;
+  concurrency?: number;
 }) {
   const files = await prisma.importFile.findMany({
     where: {
@@ -588,142 +616,160 @@ export async function importCanonicalDocxValuesToStaging(params?: {
     };
   }
 
-  let importedFiles = 0;
-  let totalValues = 0;
-  let missingSemantics = 0;
-  const structureSignatures = new Set<string>();
+  const extractionResults = await runWithConcurrency(
+    files,
+    params?.concurrency ?? 2,
+    async (file) => {
+      if (!file.formType?.code || !file.reportingYear?.year) {
+        return {
+          imported: false,
+          totalValues: 0,
+          missingSemantics: 0,
+          structureSignature: null as string | null,
+        };
+      }
 
-  for (const file of files) {
-    if (!file.formType?.code || !file.reportingYear?.year) {
-      continue;
-    }
+      const extraction = await extractCanonicalDocxRows({
+        filePath: file.storagePath,
+        formCode: file.formType.code,
+        year: file.reportingYear.year,
+      });
 
-    const extraction = await extractCanonicalDocxRows({
-      filePath: file.storagePath,
-      formCode: file.formType.code,
-      year: file.reportingYear.year,
-    });
+      const values = extraction.rows.map((row) => ({
+        rawKey: row.xml_tag,
+        rawLabel: buildRawLabel({
+          tableTitle: row.table_title,
+          rowNo: row.row_no,
+          rowLabel: row.row_label,
+          colNo: row.col_no,
+          colLabel: row.col_label,
+        }),
+        normalizedKey: row.xml_tag,
+        valueText: row.value_raw,
+        valueNumber: parseNumberValue(row.value_raw),
+        confidence: row.table_title || row.row_label || row.col_label ? 0.99 : 0.6,
+        contextJson: {
+          source: "canonical_docx",
+          form: row.form,
+          year: row.year,
+          xmlTag: row.xml_tag,
+          tableCode: row.table_code,
+          tableTitle: row.table_title,
+          rowNo: row.row_no,
+          rowLabel: row.row_label,
+          colNo: row.col_no,
+          colLabel: row.col_label,
+          tblSeq: row.tbl_seq,
+          gridRow: row.grid_r,
+          gridCol: row.grid_c,
+        },
+      }));
 
-    const values = extraction.rows.map((row) => ({
-      rawKey: row.xml_tag,
-      rawLabel: buildRawLabel({
-        tableTitle: row.table_title,
-        rowNo: row.row_no,
-        rowLabel: row.row_label,
-        colNo: row.col_no,
-        colLabel: row.col_label,
-      }),
-      normalizedKey: row.xml_tag,
-      valueText: row.value_raw,
-      valueNumber: parseNumberValue(row.value_raw),
-      confidence: row.table_title || row.row_label || row.col_label ? 0.99 : 0.6,
-      contextJson: {
-        source: "canonical_docx",
-        form: row.form,
-        year: row.year,
-        xmlTag: row.xml_tag,
-        tableCode: row.table_code,
-        tableTitle: row.table_title,
-        rowNo: row.row_no,
-        rowLabel: row.row_label,
-        colNo: row.col_no,
-        colLabel: row.col_label,
-        tblSeq: row.tbl_seq,
-        gridRow: row.grid_r,
-        gridCol: row.grid_c,
-      },
-    }));
+      const currentMissingSemantics = extraction.rows.filter(
+        (row) => !row.table_title && !row.row_label && !row.col_label,
+      ).length;
 
-    const currentMissingSemantics = extraction.rows.filter(
-      (row) => !row.table_title && !row.row_label && !row.col_label,
-    ).length;
-    missingSemantics += currentMissingSemantics;
-    totalValues += values.length;
-    structureSignatures.add(extraction.structureSignature);
-
-    await prisma.$transaction(
-      async (tx) => {
-        await tx.importFieldValue.deleteMany({
-          where: {
-            importFileId: file.id,
-          },
-        });
-        await tx.importIssue.deleteMany({
-          where: {
-            importFileId: file.id,
-            code: {
-              in: ["DOCX_VALUE_IMPORT_NO_SEMANTICS", "DOCX_VALUE_IMPORT_EMPTY"],
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.importFieldValue.deleteMany({
+            where: {
+              importFileId: file.id,
             },
-          },
-        });
-
-        if (values.length > 0) {
-          await tx.importFieldValue.createMany({
-            data: values.map((value) => ({
-              importFileId: file.id,
-              rawKey: value.rawKey,
-              rawLabel: value.rawLabel,
-              normalizedKey: value.normalizedKey,
-              valueText: value.valueText,
-              valueNumber: value.valueNumber,
-              confidence: value.confidence,
-              contextJson: value.contextJson,
-            })),
           });
-        } else {
-          await tx.importIssue.create({
-            data: {
+          await tx.importIssue.deleteMany({
+            where: {
               importFileId: file.id,
-              code: "DOCX_VALUE_IMPORT_EMPTY",
-              message: "Python DOCX extractor не вернул значений для документа.",
-              severity: ImportIssueSeverity.WARNING,
-              detailsJson: {
-                source: "canonical_docx",
+              code: {
+                in: ["DOCX_VALUE_IMPORT_NO_SEMANTICS", "DOCX_VALUE_IMPORT_EMPTY"],
               },
             },
           });
-        }
 
-        if (currentMissingSemantics > 0) {
-          await tx.importIssue.create({
+          if (values.length > 0) {
+            await tx.importFieldValue.createMany({
+              data: values.map((value) => ({
+                importFileId: file.id,
+                rawKey: value.rawKey,
+                rawLabel: value.rawLabel,
+                normalizedKey: value.normalizedKey,
+                valueText: value.valueText,
+                valueNumber: value.valueNumber,
+                confidence: value.confidence,
+                contextJson: value.contextJson,
+              })),
+            });
+          } else {
+            await tx.importIssue.create({
+              data: {
+                importFileId: file.id,
+                code: "DOCX_VALUE_IMPORT_EMPTY",
+                message: "Python DOCX extractor не вернул значений для документа.",
+                severity: ImportIssueSeverity.WARNING,
+                detailsJson: {
+                  source: "canonical_docx",
+                },
+              },
+            });
+          }
+
+          if (currentMissingSemantics > 0) {
+            await tx.importIssue.create({
+              data: {
+                importFileId: file.id,
+                code: "DOCX_VALUE_IMPORT_NO_SEMANTICS",
+                message: `Для ${currentMissingSemantics} значений не удалось определить table/row/column контекст.`,
+                severity: ImportIssueSeverity.WARNING,
+                detailsJson: {
+                  source: "canonical_docx",
+                  missingSemantics: currentMissingSemantics,
+                },
+              },
+            });
+          }
+
+          await tx.importFile.update({
+            where: {
+              id: file.id,
+            },
             data: {
-              importFileId: file.id,
-              code: "DOCX_VALUE_IMPORT_NO_SEMANTICS",
-              message: `Для ${currentMissingSemantics} значений не удалось определить table/row/column контекст.`,
-              severity: ImportIssueSeverity.WARNING,
-              detailsJson: {
+              status: ImportFileStatus.EXTRACTED,
+              extractedPayload: {
                 source: "canonical_docx",
+                totalValues: values.length,
+                numericValues: values.filter((value) => value.valueNumber !== null).length,
                 missingSemantics: currentMissingSemantics,
+                structureSignature: extraction.structureSignature,
+                structureStats: extraction.structureStats,
               },
             },
           });
-        }
+        },
+        {
+          maxWait: 10000,
+          timeout: 120000,
+        },
+      );
 
-        await tx.importFile.update({
-          where: {
-            id: file.id,
-          },
-          data: {
-            status: ImportFileStatus.EXTRACTED,
-            extractedPayload: {
-              source: "canonical_docx",
-              totalValues: values.length,
-              numericValues: values.filter((value) => value.valueNumber !== null).length,
-              missingSemantics: currentMissingSemantics,
-              structureSignature: extraction.structureSignature,
-              structureStats: extraction.structureStats,
-            },
-          },
-        });
-      },
-      {
-        maxWait: 10000,
-        timeout: 120000,
-      },
-    );
+      return {
+        imported: true,
+        totalValues: values.length,
+        missingSemantics: currentMissingSemantics,
+        structureSignature: extraction.structureSignature,
+      };
+    },
+  );
 
-    importedFiles += 1;
-  }
+  const importedFiles = extractionResults.filter((result) => result.imported).length;
+  const totalValues = extractionResults.reduce((sum, result) => sum + result.totalValues, 0);
+  const missingSemantics = extractionResults.reduce(
+    (sum, result) => sum + result.missingSemantics,
+    0,
+  );
+  const structureSignatures = new Set(
+    extractionResults
+      .map((result) => result.structureSignature)
+      .filter((value): value is string => Boolean(value)),
+  );
 
   return {
     selectedFiles: files.length,

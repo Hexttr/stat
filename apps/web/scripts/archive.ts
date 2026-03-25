@@ -33,6 +33,40 @@ function hasFlag(flag: string) {
   return process.argv.includes(flag);
 }
 
+function parseCsvArg(rawValue: string | null, fallback: string[]) {
+  if (!rawValue) {
+    return fallback;
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+async function applyMappingByForm(params: {
+  formCode: string;
+  year?: number;
+  limit?: number;
+  offset?: number;
+  batchId?: string;
+}) {
+  switch (params.formCode) {
+    case "F12":
+      return applyArchiveF12PilotMapping(params);
+    case "F14":
+      return applyArchiveF14PilotMapping(params);
+    case "F19":
+      return applyArchiveF19PilotMapping(params);
+    case "F30":
+      return applyArchiveF30PilotMapping(params);
+    case "F47":
+      return applyArchiveF47PilotMapping(params);
+    default:
+      throw new Error(`Неизвестная форма для mapping: ${params.formCode}`);
+  }
+}
+
 async function main() {
   const command = process.argv[2];
   const batchId = getArgValue("--batch-id") ?? undefined;
@@ -95,6 +129,7 @@ async function main() {
       const yearRaw = getArgValue("--year");
       const limitRaw = getArgValue("--limit");
       const offsetRaw = getArgValue("--offset");
+      const concurrencyRaw = getArgValue("--concurrency");
 
       const result = await importCanonicalDocxValuesToStaging({
         formCode: formCode?.toUpperCase(),
@@ -102,8 +137,84 @@ async function main() {
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
         matchedOnly: hasFlag("--matched-only"),
+        concurrency: concurrencyRaw ? Number(concurrencyRaw) : undefined,
       });
       console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "run-docx-pipeline": {
+      const yearRaw = getArgValue("--year");
+      const forms = parseCsvArg(getArgValue("--forms"), ["F12", "F14", "F19", "F30", "F47"]);
+      const limitRaw = getArgValue("--limit");
+      const offsetRaw = getArgValue("--offset");
+      const concurrencyRaw = getArgValue("--concurrency");
+      const matchedOnly = hasFlag("--matched-only");
+
+      if (!yearRaw) {
+        throw new Error("Для run-docx-pipeline укажите --year 2024");
+      }
+
+      const year = Number(yearRaw);
+      const limit = limitRaw ? Number(limitRaw) : undefined;
+      const offset = offsetRaw ? Number(offsetRaw) : undefined;
+      const concurrency = concurrencyRaw ? Number(concurrencyRaw) : undefined;
+      const results: Array<{
+        formCode: string;
+        pilot: Awaited<ReturnType<typeof createArchivePilotRegionSubmissions>>;
+        extraction: Awaited<ReturnType<typeof importCanonicalDocxValuesToStaging>>;
+        mapping: Awaited<ReturnType<typeof applyArchiveF12PilotMapping>>;
+      }> = [];
+
+      await ensureArchiveYearlyFormVersions();
+
+      for (const formCode of forms) {
+        console.log(`[run-docx-pipeline] ${formCode}/${year}: pilot start`);
+        const pilot = await createArchivePilotRegionSubmissions({
+          formCode,
+          year,
+          batchId: batchId ?? "canonical-docx-archive",
+        });
+        console.log(
+          `[run-docx-pipeline] ${formCode}/${year}: pilot done`,
+          JSON.stringify(pilot),
+        );
+
+        console.log(`[run-docx-pipeline] ${formCode}/${year}: extraction start`);
+        const extraction = await importCanonicalDocxValuesToStaging({
+          formCode,
+          year,
+          limit,
+          offset,
+          matchedOnly,
+          concurrency,
+        });
+        console.log(
+          `[run-docx-pipeline] ${formCode}/${year}: extraction done`,
+          JSON.stringify(extraction),
+        );
+
+        console.log(`[run-docx-pipeline] ${formCode}/${year}: mapping start`);
+        const mapping = await applyMappingByForm({
+          formCode,
+          year,
+          limit,
+          offset,
+          batchId: batchId ?? "canonical-docx-archive",
+        });
+        console.log(
+          `[run-docx-pipeline] ${formCode}/${year}: mapping done`,
+          JSON.stringify(mapping),
+        );
+
+        results.push({
+          formCode,
+          pilot,
+          extraction,
+          mapping,
+        });
+      }
+
+      console.log(JSON.stringify({ year, batchId: batchId ?? "canonical-docx-archive", results }, null, 2));
       break;
     }
     case "map-f12": {
@@ -233,7 +344,7 @@ async function main() {
     }
     default:
       throw new Error(
-        "Неизвестная команда. Используйте: sync-regions | import-registry | import-docx-registry | prepare-forms | pilot | pull-values | pull-docx-values | map-f12 | map-f14 | map-f19 | map-f30 | map-f47 | enrich-f12 | enrich-f14 | enrich-f19 | enrich-f30 | enrich-f47",
+        "Неизвестная команда. Используйте: sync-regions | import-registry | import-docx-registry | prepare-forms | pilot | pull-values | pull-docx-values | run-docx-pipeline | map-f12 | map-f14 | map-f19 | map-f30 | map-f47 | enrich-f12 | enrich-f14 | enrich-f19 | enrich-f30 | enrich-f47",
       );
   }
 }

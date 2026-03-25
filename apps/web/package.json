@@ -18,6 +18,7 @@
     "archive:pilot": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pilot",
     "archive:pull-values": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pull-values",
     "archive:pull-docx-values": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts pull-docx-values",
+    "archive:run-docx-pipeline": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts run-docx-pipeline",
     "archive:map-f12": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f12",
     "archive:map-f14": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f14",
     "archive:map-f19": "node --max-old-space-size=8192 ./node_modules/tsx/dist/cli.mjs scripts/archive.ts map-f19",
