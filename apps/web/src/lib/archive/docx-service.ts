@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { ImportFileStatus, ImportIssueSeverity } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { normalizeCanonText } from "./handoff";
+import { loadHandoffScopeEntities, normalizeCanonText } from "./handoff";
 import {
   CANONICAL_DOCX_BATCH_NAME,
   extractCanonicalDocxRows,
@@ -18,6 +18,13 @@ type RegionLookupRecord = {
   shortName: string;
 };
 
+type ScopeLookupRecord = {
+  scopeType: string;
+  scopeKey: string;
+  scopeNameCanon: string;
+  code4: string | null;
+};
+
 function createDocxImportFileId(sourceDoc: string) {
   return `docx_${createHash("sha1").update(sourceDoc).digest("hex")}`;
 }
@@ -26,10 +33,10 @@ function getRegionLookup(regions: RegionLookupRecord[]) {
   const byName = new Map<string, RegionLookupRecord>();
 
   for (const region of regions) {
-    for (const alias of createRegionAliasKeys(region.fullName)) {
+    for (const alias of createNameAliasKeys(region.fullName)) {
       byName.set(alias, region);
     }
-    for (const alias of createRegionAliasKeys(region.shortName)) {
+    for (const alias of createNameAliasKeys(region.shortName)) {
       byName.set(alias, region);
     }
   }
@@ -39,7 +46,27 @@ function getRegionLookup(regions: RegionLookupRecord[]) {
   };
 }
 
-function createRegionAliasKeys(value: string | null | undefined) {
+function getScopeLookup(scopes: ScopeLookupRecord[]) {
+  const byName = new Map<string, ScopeLookupRecord>();
+  const byCode4 = new Map<string, ScopeLookupRecord>();
+
+  for (const scope of scopes) {
+    for (const alias of createNameAliasKeys(scope.scopeNameCanon)) {
+      byName.set(alias, scope);
+    }
+
+    if (scope.code4) {
+      byCode4.set(scope.code4, scope);
+    }
+  }
+
+  return {
+    byName,
+    byCode4,
+  };
+}
+
+function createNameAliasKeys(value: string | null | undefined) {
   const aliases = new Set<string>();
 
   const candidates = [
@@ -57,21 +84,7 @@ function createRegionAliasKeys(value: string | null | undefined) {
 
     aliases.add(normalized);
 
-    const stripped = normalized
-      .replace(/\bБЕЗ АО\b/g, " ")
-      .replace(/\bБЕЗ\b/g, " ")
-      .replace(/\bРЕСПУБЛИКА\b/g, " ")
-      .replace(/\bГОРОД ФЕДЕРАЛЬНОГО ЗНАЧЕНИЯ\b/g, " ")
-      .replace(/\bГОРОД\b/g, " ")
-      .replace(/\bФЕДЕРАЛЬНАЯ ТЕРРИТОРИЯ\b/g, " ")
-      .replace(/\bАВТОНОМНЫЙ ОКРУГ\b/g, " ")
-      .replace(/\bАВТОНОМНАЯ ОБЛАСТЬ\b/g, " ")
-      .replace(/\bОБЛАСТЬ\b/g, " ")
-      .replace(/\bКРАЙ\b/g, " ")
-      .replace(/\bАО\b/g, " ")
-      .replace(/\bФО\b/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const stripped = stripGenericGeoTokens(normalized);
 
     if (stripped) {
       aliases.add(stripped);
@@ -82,7 +95,7 @@ function createRegionAliasKeys(value: string | null | undefined) {
 }
 
 function normalizeRegionAliasSource(value: string) {
-  return value
+  const normalized = value
     .toUpperCase()
     .replace(/[A]/g, "А")
     .replace(/[B]/g, "В")
@@ -95,15 +108,68 @@ function normalizeRegionAliasSource(value: string) {
     .replace(/[P]/g, "Р")
     .replace(/[T]/g, "Т")
     .replace(/[X]/g, "Х")
-    .replace(/РЕСП\./g, "РЕСПУБЛИКА ")
-    .replace(/ОБЛ\./g, "ОБЛАСТЬ ")
-    .replace(/ФЕД\.?\s*ОКР/g, "ФЕДЕРАЛЬНЫЙ ОКРУГ")
-    .replace(/АВТ\.?\s*ОКР/g, "АВТОНОМНЫЙ ОКРУГ")
-    .replace(/\bАО\b/g, "АВТОНОМНЫЙ ОКРУГ")
-    .replace(/\bОБЛ\b/g, "ОБЛАСТЬ")
-    .replace(/\bРЕСП\b/g, "РЕСПУБЛИКА")
     .replace(/[.]/g, " ")
     .replace(/\s+/g, " ")
+    .trim();
+
+  const expandedTokens = normalized
+    .split(" ")
+    .filter(Boolean)
+    .flatMap((token) => {
+      switch (token) {
+        case "РЕСП":
+        case "РЕСПУБЛИКА":
+          return ["РЕСПУБЛИКА"];
+        case "ОБЛ":
+        case "ОБЛАСТЬ":
+          return ["ОБЛАСТЬ"];
+        case "ФЕД":
+        case "ФЕДЕР":
+        case "ФЕДЕРАЛЬН":
+        case "ФЕДЕРАЛЬНЫЙ":
+          return ["ФЕДЕРАЛЬНЫЙ"];
+        case "ОКР":
+        case "ОКРУГ":
+          return ["ОКРУГ"];
+        case "АВТ":
+        case "АВТОН":
+        case "АВТОНОМНАЯ":
+        case "АВТОНОМНЫЙ":
+          return ["АВТОНОМНЫЙ"];
+        case "АО":
+          return ["АВТОНОМНЫЙ", "ОКРУГ"];
+        case "ФО":
+          return ["ФЕДЕРАЛЬНЫЙ", "ОКРУГ"];
+        default:
+          return [token];
+      }
+    });
+
+  return expandedTokens.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function stripGenericGeoTokens(value: string) {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .filter(
+      (token) =>
+        ![
+          "БЕЗ",
+          "РЕСПУБЛИКА",
+          "ГОРОД",
+          "ФЕДЕРАЛЬНАЯ",
+          "ФЕДЕРАЛЬНЫЙ",
+          "ТЕРРИТОРИЯ",
+          "АВТОНОМНАЯ",
+          "АВТОНОМНЫЙ",
+          "ОКРУГ",
+          "ОБЛАСТЬ",
+          "КРАЙ",
+          "ФО",
+        ].includes(token),
+    )
+    .join(" ")
     .trim();
 }
 
@@ -111,10 +177,34 @@ function findCanonicalRegionByName(
   lookup: ReturnType<typeof getRegionLookup>,
   canonicalName: string | null | undefined,
 ) {
-  for (const alias of createRegionAliasKeys(canonicalName)) {
+  for (const alias of createNameAliasKeys(canonicalName)) {
     const matchedRegion = lookup.byName.get(alias);
     if (matchedRegion) {
       return matchedRegion;
+    }
+  }
+
+  return null;
+}
+
+function findCanonicalScope(
+  lookup: ReturnType<typeof getScopeLookup>,
+  params: {
+    code4?: string | null;
+    canonicalName?: string | null;
+  },
+) {
+  if (params.code4) {
+    const matchedByCode4 = lookup.byCode4.get(params.code4);
+    if (matchedByCode4) {
+      return matchedByCode4;
+    }
+  }
+
+  for (const alias of createNameAliasKeys(params.canonicalName)) {
+    const matchedScope = lookup.byName.get(alias);
+    if (matchedScope) {
+      return matchedScope;
     }
   }
 
@@ -150,7 +240,7 @@ function buildRawLabel(params: {
 }
 
 export async function importCanonicalDocxArchiveRegistry() {
-  const [entries, regions, formTypes] = await Promise.all([
+  const [entries, regions, formTypes, scopeEntities] = await Promise.all([
     scanCanonicalDocxArchive(),
     prisma.region.findMany({
       select: {
@@ -167,10 +257,12 @@ export async function importCanonicalDocxArchiveRegistry() {
         code: true,
       },
     }),
+    loadHandoffScopeEntities(),
   ]);
 
   const years = Array.from(new Set(entries.map((entry) => entry.year))).sort();
   const regionLookup = getRegionLookup(regions);
+  const scopeLookup = getScopeLookup(scopeEntities);
   const formTypeByCode = new Map(formTypes.map((formType) => [formType.code, formType]));
 
   for (const year of years) {
@@ -218,11 +310,20 @@ export async function importCanonicalDocxArchiveRegistry() {
 
   let createdFiles = 0;
   let updatedFiles = 0;
-  let matchedRegions = 0;
-  let unmatchedRegions = 0;
+  let matchedSubjects = 0;
+  let unmatchedSubjects = 0;
+  let scopeEntries = 0;
 
   for (const entry of entries) {
     const matchedRegion = findCanonicalRegionByName(regionLookup, entry.regionNameCandidate);
+    const matchedScope =
+      matchedRegion === null
+        ? findCanonicalScope(scopeLookup, {
+            code4: entry.code4,
+            canonicalName: entry.regionNameCandidate,
+          })
+        : null;
+    const resolvedKind = matchedScope ? "SCOPE" : "SUBJECT";
     const formType = formTypeByCode.get(entry.formCode) ?? null;
     const reportingYear = reportingYearByYear.get(entry.year) ?? null;
     const fileId = createDocxImportFileId(entry.sourcePath);
@@ -235,10 +336,12 @@ export async function importCanonicalDocxArchiveRegistry() {
       },
     });
 
-    if (matchedRegion) {
-      matchedRegions += 1;
+    if (resolvedKind === "SCOPE") {
+      scopeEntries += 1;
+    } else if (matchedRegion) {
+      matchedSubjects += 1;
     } else {
-      unmatchedRegions += 1;
+      unmatchedSubjects += 1;
     }
 
     await prisma.importFile.upsert({
@@ -261,10 +364,14 @@ export async function importCanonicalDocxArchiveRegistry() {
             sourcePath: entry.sourcePath,
             year: entry.year,
             formCode: entry.formCode,
+            resolvedKind,
             regionNameCandidate: entry.regionNameCandidate,
             regionMatchKey: entry.regionMatchKey,
             code4: entry.code4,
             code5: entry.code5,
+            scopeType: matchedScope?.scopeType ?? null,
+            scopeKey: matchedScope?.scopeKey ?? null,
+            scopeNameCanon: matchedScope?.scopeNameCanon ?? null,
             matchedRegionCode: matchedRegion?.code ?? null,
             matchedRegionName: matchedRegion?.fullName ?? null,
           },
@@ -287,10 +394,14 @@ export async function importCanonicalDocxArchiveRegistry() {
             sourcePath: entry.sourcePath,
             year: entry.year,
             formCode: entry.formCode,
+            resolvedKind,
             regionNameCandidate: entry.regionNameCandidate,
             regionMatchKey: entry.regionMatchKey,
             code4: entry.code4,
             code5: entry.code5,
+            scopeType: matchedScope?.scopeType ?? null,
+            scopeKey: matchedScope?.scopeKey ?? null,
+            scopeNameCanon: matchedScope?.scopeNameCanon ?? null,
             matchedRegionCode: matchedRegion?.code ?? null,
             matchedRegionName: matchedRegion?.fullName ?? null,
           },
@@ -309,8 +420,9 @@ export async function importCanonicalDocxArchiveRegistry() {
     totalEntries: entries.length,
     createdFiles,
     updatedFiles,
-    matchedRegions,
-    unmatchedRegions,
+    matchedSubjects,
+    unmatchedSubjects,
+    scopeEntries,
   };
 }
 

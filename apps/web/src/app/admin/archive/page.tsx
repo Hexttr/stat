@@ -101,7 +101,9 @@ export default async function AdminArchivePage({
       Array<{
         year: number;
         formCode: string;
-        importedDocs: bigint;
+        subjectDocs: bigint;
+        scopeDocs: bigint;
+        unmatchedSubjectDocs: bigint;
         extractedDocs: bigint;
         distinctRegions: bigint;
         duplicateSubjectFiles: bigint;
@@ -113,24 +115,47 @@ export default async function AdminArchivePage({
       select
         ry.year as year,
         ft.code as "formCode",
-        count(*) as "importedDocs",
-        count(*) filter (where f.status = 'EXTRACTED') as "extractedDocs",
+        count(*) filter (
+          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+        ) as "subjectDocs",
+        count(*) filter (
+          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', '') = 'SCOPE'
+        ) as "scopeDocs",
+        count(*) filter (
+          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+            and f."regionId" is null
+        ) as "unmatchedSubjectDocs",
+        count(*) filter (
+          where f.status = 'EXTRACTED'
+            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+        ) as "extractedDocs",
         count(distinct f."regionId") filter (
-          where f.status = 'EXTRACTED' and f."regionId" is not null
+          where f.status = 'EXTRACTED'
+            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+            and f."regionId" is not null
         ) as "distinctRegions",
         (
-          count(*) filter (where f.status = 'EXTRACTED' and f."regionId" is not null)
+          count(*) filter (
+            where f.status = 'EXTRACTED'
+              and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+              and f."regionId" is not null
+          )
           - count(distinct f."regionId") filter (
-            where f.status = 'EXTRACTED' and f."regionId" is not null
+            where f.status = 'EXTRACTED'
+              and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+              and f."regionId" is not null
           )
         ) as "duplicateSubjectFiles",
         count(*) filter (
-          where f.status = 'EXTRACTED' and f."regionId" is null
+          where f.status = 'EXTRACTED'
+            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+            and f."regionId" is null
         ) as "nullRegionFiles",
         coalesce(
           sum(
             case
               when f.status = 'EXTRACTED'
+                and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
               then coalesce((f."extractedPayload"->>'totalValues')::bigint, 0)
               else 0
             end
@@ -148,6 +173,8 @@ export default async function AdminArchivePage({
       Array<{
         importedDocs: bigint;
         importedSubjectFiles: bigint;
+        scopeFiles: bigint;
+        unmatchedSubjectFiles: bigint;
         extractedFiles: bigint;
         extractedValues: bigint;
         structureSignatures: bigint;
@@ -155,12 +182,26 @@ export default async function AdminArchivePage({
     >`
       select
         count(*) as "importedDocs",
-        count(*) filter (where "regionId" is not null) as "importedSubjectFiles",
-        count(*) filter (where status = 'EXTRACTED') as "extractedFiles",
+        count(*) filter (
+          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+            and "regionId" is not null
+        ) as "importedSubjectFiles",
+        count(*) filter (
+          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', '') = 'SCOPE'
+        ) as "scopeFiles",
+        count(*) filter (
+          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+            and "regionId" is null
+        ) as "unmatchedSubjectFiles",
+        count(*) filter (
+          where status = 'EXTRACTED'
+            and coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
+        ) as "extractedFiles",
         coalesce(
           sum(
             case
               when status = 'EXTRACTED'
+                and coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
               then coalesce(("extractedPayload"->>'totalValues')::bigint, 0)
               else 0
             end
@@ -300,7 +341,7 @@ export default async function AdminArchivePage({
 
   const synced = parseNotice(params.synced, 5);
   const registryImported = parseNotice(params.registryImported, 5);
-  const docxRegistryImported = parseNotice(params.docxRegistryImported, 5);
+  const docxRegistryImported = parseNotice(params.docxRegistryImported, 6);
   const yearlyFormsReady = parseNotice(params.yearlyFormsReady, 3);
   const pilotImported = parseNotice(params.pilotImported, 7);
   const valuesImported = parseNotice(params.valuesImported, 7);
@@ -340,6 +381,8 @@ export default async function AdminArchivePage({
   const docxTotals = docxOverallImportMetrics[0] ?? {
     importedDocs: BigInt(0),
     importedSubjectFiles: BigInt(0),
+    scopeFiles: BigInt(0),
+    unmatchedSubjectFiles: BigInt(0),
     extractedFiles: BigInt(0),
     extractedValues: BigInt(0),
     structureSignatures: BigInt(0),
@@ -350,6 +393,8 @@ export default async function AdminArchivePage({
   const totalImportFiles = Number(totals.importedDocs);
   const docxImportedFiles = Number(docxTotals.importedDocs);
   const docxImportedSubjectFiles = Number(docxTotals.importedSubjectFiles);
+  const docxScopeFiles = Number(docxTotals.scopeFiles);
+  const docxUnmatchedSubjectFiles = Number(docxTotals.unmatchedSubjectFiles);
   const docxExtractedFiles = Number(docxTotals.extractedFiles);
   const docxExtractedValues = Number(docxTotals.extractedValues);
   const docxStructureSignatures = Number(docxTotals.structureSignatures);
@@ -384,7 +429,9 @@ export default async function AdminArchivePage({
     docxImportMetricsRows.map((row) => [
       `${row.year}-${row.formCode}`,
       {
-        importedDocs: Number(row.importedDocs),
+        subjectDocs: Number(row.subjectDocs),
+        scopeDocs: Number(row.scopeDocs),
+        unmatchedSubjectDocs: Number(row.unmatchedSubjectDocs),
         extractedDocs: Number(row.extractedDocs),
         distinctRegions: Number(row.distinctRegions),
         duplicateSubjectFiles: Number(row.duplicateSubjectFiles),
@@ -447,7 +494,9 @@ export default async function AdminArchivePage({
     formTypes.map((formType) => {
       const metrics =
         docxImportMetricsByKey.get(`${year}-${formType.code}`) ?? {
-          importedDocs: 0,
+          subjectDocs: 0,
+          scopeDocs: 0,
+          unmatchedSubjectDocs: 0,
           extractedDocs: 0,
           distinctRegions: 0,
           duplicateSubjectFiles: 0,
@@ -466,7 +515,9 @@ export default async function AdminArchivePage({
         key: `docx-${year}-${formType.code}`,
         year,
         formCode: formType.code,
-        importedDocs: metrics.importedDocs,
+        subjectDocs: metrics.subjectDocs,
+        scopeDocs: metrics.scopeDocs,
+        unmatchedSubjectDocs: metrics.unmatchedSubjectDocs,
         extractedDocs: metrics.extractedDocs,
         distinctRegions: metrics.distinctRegions,
         duplicateSubjectFiles: metrics.duplicateSubjectFiles,
@@ -539,12 +590,22 @@ export default async function AdminArchivePage({
     {
       label: "DOCX files in registry",
       value: docxImportedFiles,
-      help: "Сколько реальных DOCX-файлов уже занесено в канонический ImportBatch.",
+      help: "Сколько реальных DOCX-файлов уже занесено в канонический ImportBatch, включая subject и scope.",
     },
     {
-      label: "DOCX matched regions",
+      label: "DOCX subject matched",
       value: docxImportedSubjectFiles,
-      help: "Сколько файлов канонического DOCX batch уже сопоставлены с Region.",
+      help: "Сколько subject-level DOCX уже сопоставлены с Region и могут участвовать в региональном архиве.",
+    },
+    {
+      label: "DOCX scope files",
+      value: docxScopeFiles,
+      help: "Сколько файлов канонического DOCX batch распознано как aggregate/scope слой и исключено из регионального покрытия.",
+    },
+    {
+      label: "DOCX subject unmatched",
+      value: docxUnmatchedSubjectFiles,
+      help: "Сколько subject-level DOCX пока остаются без сопоставления с Region.",
     },
     {
       label: "DOCX extracted",
@@ -623,8 +684,9 @@ export default async function AdminArchivePage({
         {docxRegistryImported ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Реестр канонических DOCX импортирован: файлов {docxRegistryImported[0]}, новых{" "}
-            {docxRegistryImported[1]}, обновлено {docxRegistryImported[2]}, сопоставлено с
-            регионами {docxRegistryImported[3]}, без match {docxRegistryImported[4]}.
+            {docxRegistryImported[1]}, обновлено {docxRegistryImported[2]}, subject match{" "}
+            {docxRegistryImported[3]}, subject без match {docxRegistryImported[4]}, scope{" "}
+            {docxRegistryImported[5]}.
           </p>
         ) : null}
         {yearlyFormsReady ? (
@@ -1297,7 +1359,8 @@ export default async function AdminArchivePage({
           </div>
           <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             DOCX batch files: {docxImportedFiles}, extracted: {docxExtractedFiles}, QA backlog:{" "}
-            {docxQaBacklog}
+            {docxQaBacklog}, scope: {docxScopeFiles}, subject без match:{" "}
+            {docxUnmatchedSubjectFiles}
           </div>
         </div>
 
@@ -1308,7 +1371,9 @@ export default async function AdminArchivePage({
                 {[
                   "Год",
                   "Форма",
-                  "В registry",
+                  "Subject docs",
+                  "Scope docs",
+                  "Subject без match",
                   "EXTRACTED",
                   "Регионов",
                   "Staging values",
@@ -1335,7 +1400,13 @@ export default async function AdminArchivePage({
                     {row.formCode}
                   </td>
                   <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
-                    {row.importedDocs}
+                    {row.subjectDocs}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.scopeDocs}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.unmatchedSubjectDocs}
                   </td>
                   <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
                     {row.extractedDocs}

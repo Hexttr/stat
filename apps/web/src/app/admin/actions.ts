@@ -2209,7 +2209,7 @@ export async function importCanonicalDocxArchiveRegistryAction(formData: FormDat
 
   redirect(
     `${parsed.returnTo || "/admin/archive"}?docxRegistryImported=${encodeURIComponent(
-      `${result.totalEntries}|${result.createdFiles}|${result.updatedFiles}|${result.matchedRegions}|${result.unmatchedRegions}`,
+      `${result.totalEntries}|${result.createdFiles}|${result.updatedFiles}|${result.matchedSubjects}|${result.unmatchedSubjects}|${result.scopeEntries}`,
     )}`,
   );
 }
