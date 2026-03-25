@@ -39,6 +39,9 @@ function getRegionLookup(regions: RegionLookupRecord[]) {
     for (const alias of createNameAliasKeys(region.shortName)) {
       byName.set(alias, region);
     }
+    for (const alias of getManualRegionAliases(region)) {
+      byName.set(alias, region);
+    }
   }
 
   return {
@@ -54,6 +57,9 @@ function getScopeLookup(scopes: ScopeLookupRecord[]) {
     for (const alias of createNameAliasKeys(scope.scopeNameCanon)) {
       byName.set(alias, scope);
     }
+    for (const alias of getManualScopeAliases(scope)) {
+      byName.set(alias, scope);
+    }
 
     if (scope.code4) {
       byCode4.set(scope.code4, scope);
@@ -64,6 +70,102 @@ function getScopeLookup(scopes: ScopeLookupRecord[]) {
     byName,
     byCode4,
   };
+}
+
+function getManualRegionAliases(region: RegionLookupRecord) {
+  const rawAliases: string[] = [];
+
+  switch (region.code) {
+    case "OKTMO_97000000000":
+      rawAliases.push("Чувашская Республика", "Чувашская", "Чувашия");
+      break;
+    case "KHANTY_MANSI_AO":
+      rawAliases.push("Ханты-Мансийский АО", "Ханты-Мансийский", "ХМАО", "ХМАО-Югра");
+      break;
+    case "JEWISH_AO":
+      rawAliases.push("Еврейская автономная обла", "Еврейская АО", "Еврейская-АО", "Еврейская");
+      break;
+    case "OKTMO_90000000000":
+      rawAliases.push(
+        "Республика Северная Осети",
+        "Респ.Сев.Осетия-Алания",
+        "Северная Осетия",
+        "Осетия-Алания",
+      );
+      break;
+    case "CHUKOTKA_AO":
+      rawAliases.push("Чукотский автономный окру", "Чукотский АО", "Чукотский");
+      break;
+    case "SAKHA":
+      rawAliases.push("Саха(Якутия)", "Саха (Якутия)", "Респ.Саха(Якутия)", "Якутия");
+      break;
+    case "KABARDINO_BALKARIA":
+      rawAliases.push("Кабардино-Балкар.Респ.", "Кабардино-Балкар", "Кабардино-Балкария");
+      break;
+    case "KARACHAY_CHERKESSIA":
+      rawAliases.push("Карачаево-Черкес.Респ.", "Карачаево-Черкес", "Карачаево-Черкесия");
+      break;
+    case "UDMURTIA":
+      rawAliases.push("Удмуртская Республ.", "Удмуртская", "Удмуртия");
+      break;
+    case "MOSCOW":
+      rawAliases.push("Г.Москва", "Город Москва");
+      break;
+    case "SAINT_PETERSBURG":
+      rawAliases.push("Г.Санкт-Петербург", "Город Санкт-Петербург");
+      break;
+    case "SEVASTOPOL":
+      rawAliases.push("Г.Севастополь", "Город Севастополь");
+      break;
+    case "ARKHANGELSK":
+      rawAliases.push("Архангельс.обл.без АО", "Архангельская область без", "Архангельская-без-АО");
+      break;
+    case "DONETSK":
+      rawAliases.push("Донецкая Народная Респуб.", "Донецкая Народная Республ", "ДНР");
+      break;
+    case "LUGANSK":
+      rawAliases.push("Луганская Народная Респуб", "Луганская Народная Республ", "ЛНР");
+      break;
+    default:
+      break;
+  }
+
+  return rawAliases.flatMap((alias) => [...createNameAliasKeys(alias)]);
+}
+
+function getManualScopeAliases(scope: ScopeLookupRecord) {
+  const rawAliases: string[] = [];
+
+  switch (scope.scopeKey) {
+    case "FMBA":
+      rawAliases.push("ФМБА");
+      break;
+    case "UDPRF_GMU":
+      rawAliases.push(
+        "Главное медицинское управ",
+        "Гл.мед.упр.дел.пр.",
+        "Упр-делами-Президента",
+      );
+      break;
+    case "NEW_SUBJECTS":
+      rawAliases.push("Свод по нов.территориям", "Свод по нов территориям");
+      break;
+    case "RF_NEW":
+      rawAliases.push(
+        "РФ с учет.новых терр.",
+        "РФ с учетом новых террит.",
+        "РФ с учет новых террит",
+        "РФ С УЧЕТ.НОВЫХ ТЕРРИТ.",
+      );
+      break;
+    case "RF":
+      rawAliases.push("РФ");
+      break;
+    default:
+      break;
+  }
+
+  return rawAliases.flatMap((alias) => [...createNameAliasKeys(alias)]);
 }
 
 function createNameAliasKeys(value: string | null | undefined) {
