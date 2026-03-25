@@ -1,13 +1,16 @@
 import Link from "next/link";
 
 import {
-  applyArchiveF12MappingAction,
+  applyArchivePilotMappingAction,
   ensureArchiveYearlyFormsAction,
   importArchiveRawValuesAction,
+  importCanonicalDocxArchiveRegistryAction,
+  importCanonicalDocxValuesAction,
   importHandoffArchiveRegistryAction,
   runArchivePilotImportAction,
   syncCanonicalRegionsAction,
 } from "@/app/admin/actions";
+import { CANONICAL_DOCX_BATCH_NAME } from "@/lib/archive/docx";
 import { HANDOFF_BATCH_NAME } from "@/lib/archive/service";
 import {
   loadHandoffDocScopeEntries,
@@ -57,10 +60,14 @@ export default async function AdminArchivePage({
     regions,
     formTypes,
     batch,
+    docxBatch,
+    docxImportMetricsRows,
+    docxOverallImportMetrics,
     versionCountRows,
     importMetricsRows,
     overallImportMetrics,
     submissionCoverageRows,
+    docxQaBacklogRows,
   ] = await Promise.all([
     searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
     loadHandoffSubjects(),
@@ -84,6 +91,86 @@ export default async function AdminArchivePage({
         name: true,
       },
     }),
+    prisma.importBatch.findUnique({
+      where: { id: CANONICAL_DOCX_BATCH_NAME },
+      select: {
+        name: true,
+      },
+    }),
+    prisma.$queryRaw<
+      Array<{
+        year: number;
+        formCode: string;
+        importedDocs: bigint;
+        extractedDocs: bigint;
+        distinctRegions: bigint;
+        duplicateSubjectFiles: bigint;
+        nullRegionFiles: bigint;
+        stagedValues: bigint;
+        structureSignatures: bigint;
+      }>
+    >`
+      select
+        ry.year as year,
+        ft.code as "formCode",
+        count(*) as "importedDocs",
+        count(*) filter (where f.status = 'EXTRACTED') as "extractedDocs",
+        count(distinct f."regionId") filter (
+          where f.status = 'EXTRACTED' and f."regionId" is not null
+        ) as "distinctRegions",
+        (
+          count(*) filter (where f.status = 'EXTRACTED' and f."regionId" is not null)
+          - count(distinct f."regionId") filter (
+            where f.status = 'EXTRACTED' and f."regionId" is not null
+          )
+        ) as "duplicateSubjectFiles",
+        count(*) filter (
+          where f.status = 'EXTRACTED' and f."regionId" is null
+        ) as "nullRegionFiles",
+        coalesce(
+          sum(
+            case
+              when f.status = 'EXTRACTED'
+              then coalesce((f."extractedPayload"->>'totalValues')::bigint, 0)
+              else 0
+            end
+          ),
+          0
+        ) as "stagedValues",
+        count(distinct nullif(f."extractedPayload"->>'structureSignature', '')) as "structureSignatures"
+      from "ImportFile" f
+      join "ReportingYear" ry on ry.id = f."reportingYearId"
+      join "FormType" ft on ft.id = f."formTypeId"
+      where f."batchId" = ${CANONICAL_DOCX_BATCH_NAME}
+      group by ry.year, ft.code
+    `,
+    prisma.$queryRaw<
+      Array<{
+        importedDocs: bigint;
+        importedSubjectFiles: bigint;
+        extractedFiles: bigint;
+        extractedValues: bigint;
+        structureSignatures: bigint;
+      }>
+    >`
+      select
+        count(*) as "importedDocs",
+        count(*) filter (where "regionId" is not null) as "importedSubjectFiles",
+        count(*) filter (where status = 'EXTRACTED') as "extractedFiles",
+        coalesce(
+          sum(
+            case
+              when status = 'EXTRACTED'
+              then coalesce(("extractedPayload"->>'totalValues')::bigint, 0)
+              else 0
+            end
+          ),
+          0
+        ) as "extractedValues",
+        count(distinct nullif("extractedPayload"->>'structureSignature', '')) as "structureSignatures"
+      from "ImportFile"
+      where "batchId" = ${CANONICAL_DOCX_BATCH_NAME}
+    `,
     prisma.$queryRaw<
       Array<{
         year: number;
@@ -198,14 +285,27 @@ export default async function AdminArchivePage({
       where ry.year between 2019 and 2024
       group by ry.year, ft.code
     `,
+    prisma.$queryRaw<
+      Array<{
+        qaBacklog: bigint;
+      }>
+    >`
+      select count(*) as "qaBacklog"
+      from "ArchiveQaIssue" q
+      join "ImportFile" f on f.id = q."importFileId"
+      where f."batchId" = ${CANONICAL_DOCX_BATCH_NAME}
+        and q.status <> 'RESOLVED'
+    `,
   ]);
 
   const synced = parseNotice(params.synced, 5);
   const registryImported = parseNotice(params.registryImported, 5);
+  const docxRegistryImported = parseNotice(params.docxRegistryImported, 5);
   const yearlyFormsReady = parseNotice(params.yearlyFormsReady, 3);
-  const pilotImported = parseNotice(params.pilotImported, 6);
-  const valuesImported = parseNotice(params.valuesImported, 6);
-  const mappingApplied = parseNotice(params.mappingApplied, 5);
+  const pilotImported = parseNotice(params.pilotImported, 7);
+  const valuesImported = parseNotice(params.valuesImported, 7);
+  const docxValuesImported = parseNotice(params.docxValuesImported, 7);
+  const mappingApplied = parseNotice(params.mappingApplied, 7);
   const error = typeof params.error === "string" ? decodeURIComponent(params.error) : null;
 
   const regionNameSet = new Set(
@@ -237,10 +337,23 @@ export default async function AdminArchivePage({
     extractedFiles: BigInt(0),
     extractedValues: BigInt(0),
   };
+  const docxTotals = docxOverallImportMetrics[0] ?? {
+    importedDocs: BigInt(0),
+    importedSubjectFiles: BigInt(0),
+    extractedFiles: BigInt(0),
+    extractedValues: BigInt(0),
+    structureSignatures: BigInt(0),
+  };
   const importedSubjectFiles = Number(totals.importedSubjectFiles);
   const extractedFiles = Number(totals.extractedFiles);
   const extractedValues = Number(totals.extractedValues);
   const totalImportFiles = Number(totals.importedDocs);
+  const docxImportedFiles = Number(docxTotals.importedDocs);
+  const docxImportedSubjectFiles = Number(docxTotals.importedSubjectFiles);
+  const docxExtractedFiles = Number(docxTotals.extractedFiles);
+  const docxExtractedValues = Number(docxTotals.extractedValues);
+  const docxStructureSignatures = Number(docxTotals.structureSignatures);
+  const docxQaBacklog = Number(docxQaBacklogRows[0]?.qaBacklog ?? BigInt(0));
   const submissionCoverageByKey = new Map(
     submissionCoverageRows.map((row) => [
       `${row.year}-${row.formCode}`,
@@ -264,6 +377,20 @@ export default async function AdminArchivePage({
         duplicateSubjectFiles: Number(row.duplicateSubjectFiles),
         nullRegionFiles: Number(row.nullRegionFiles),
         stagedValues: Number(row.stagedValues),
+      },
+    ]),
+  );
+  const docxImportMetricsByKey = new Map(
+    docxImportMetricsRows.map((row) => [
+      `${row.year}-${row.formCode}`,
+      {
+        importedDocs: Number(row.importedDocs),
+        extractedDocs: Number(row.extractedDocs),
+        distinctRegions: Number(row.distinctRegions),
+        duplicateSubjectFiles: Number(row.duplicateSubjectFiles),
+        nullRegionFiles: Number(row.nullRegionFiles),
+        stagedValues: Number(row.stagedValues),
+        structureSignatures: Number(row.structureSignatures),
       },
     ]),
   );
@@ -315,6 +442,41 @@ export default async function AdminArchivePage({
   const totalArchiveAnomalies = matrixRows.reduce(
     (sum, row) => sum + row.duplicateSubjectFiles + row.nullRegionFiles,
     0,
+  );
+  const docxMatrixRows = targetYears.flatMap((year) =>
+    formTypes.map((formType) => {
+      const metrics =
+        docxImportMetricsByKey.get(`${year}-${formType.code}`) ?? {
+          importedDocs: 0,
+          extractedDocs: 0,
+          distinctRegions: 0,
+          duplicateSubjectFiles: 0,
+          nullRegionFiles: 0,
+          stagedValues: 0,
+          structureSignatures: 0,
+        };
+      const coverage =
+        submissionCoverageByKey.get(`${year}-${formType.code}`) ?? {
+          regionSubmissions: 0,
+          mappedSubmissions: 0,
+          mappedValues: 0,
+        };
+
+      return {
+        key: `docx-${year}-${formType.code}`,
+        year,
+        formCode: formType.code,
+        importedDocs: metrics.importedDocs,
+        extractedDocs: metrics.extractedDocs,
+        distinctRegions: metrics.distinctRegions,
+        duplicateSubjectFiles: metrics.duplicateSubjectFiles,
+        nullRegionFiles: metrics.nullRegionFiles,
+        stagedValues: metrics.stagedValues,
+        structureSignatures: metrics.structureSignatures,
+        mappedSubmissions: coverage.mappedSubmissions,
+        mappedValues: coverage.mappedValues,
+      };
+    }),
   );
   const dashboardMetrics = [
     {
@@ -373,6 +535,38 @@ export default async function AdminArchivePage({
       help: "Проблемные записи staging: дубли одного региона и файлы, где регион не определился.",
     },
   ];
+  const docxDashboardMetrics = [
+    {
+      label: "DOCX files in registry",
+      value: docxImportedFiles,
+      help: "Сколько реальных DOCX-файлов уже занесено в канонический ImportBatch.",
+    },
+    {
+      label: "DOCX matched regions",
+      value: docxImportedSubjectFiles,
+      help: "Сколько файлов канонического DOCX batch уже сопоставлены с Region.",
+    },
+    {
+      label: "DOCX extracted",
+      value: docxExtractedFiles,
+      help: "Сколько DOCX уже прошли Python extraction и попали в staging.",
+    },
+    {
+      label: "DOCX staging values",
+      value: docxExtractedValues,
+      help: "Количество сырых ImportFieldValue, извлеченных напрямую из DOCX.",
+    },
+    {
+      label: "Structure signatures",
+      value: docxStructureSignatures,
+      help: "Сколько уникальных структур форм обнаружено по extracted DOCX.",
+    },
+    {
+      label: "DOCX QA backlog",
+      value: docxQaBacklog,
+      help: "Открытые Archive QA issues, относящиеся к каноническому DOCX batch.",
+    },
+  ];
 
   const pilotOptions = formTypes.map((formType) => formType.code);
 
@@ -396,6 +590,9 @@ export default async function AdminArchivePage({
           <div className="flex flex-col items-start gap-3 xl:items-end">
             <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
               Batch: {batch?.name ?? HANDOFF_BATCH_NAME}
+            </div>
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Canonical DOCX batch: {docxBatch?.name ?? CANONICAL_DOCX_BATCH_NAME}
             </div>
             <Link
               href="/admin/archive/qa"
@@ -423,6 +620,13 @@ export default async function AdminArchivePage({
             {registryImported[3]}, без региона {registryImported[4]}.
           </p>
         ) : null}
+        {docxRegistryImported ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Реестр канонических DOCX импортирован: файлов {docxRegistryImported[0]}, новых{" "}
+            {docxRegistryImported[1]}, обновлено {docxRegistryImported[2]}, сопоставлено с
+            регионами {docxRegistryImported[3]}, без match {docxRegistryImported[4]}.
+          </p>
+        ) : null}
         {yearlyFormsReady ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Годовые формы подготовлены: целевых лет {yearlyFormsReady[0]}, новых шаблонов{" "}
@@ -431,23 +635,33 @@ export default async function AdminArchivePage({
         ) : null}
         {pilotImported ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            Пилот {pilotImported[0]} / {pilotImported[1]}: кандидатов {pilotImported[2]},
-            назначений создано {pilotImported[3]}, черновиков региона {pilotImported[4]},
-            без регионального центра {pilotImported[5]}.
+            Пилот batch `{pilotImported[0]}` / {pilotImported[1]} / {pilotImported[2]}:
+            кандидатов {pilotImported[3]}, назначений создано {pilotImported[4]}, черновиков
+            региона {pilotImported[5]}, без регионального центра {pilotImported[6]}.
           </p>
         ) : null}
         {valuesImported ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            Raw values imported: {valuesImported[0]} / {valuesImported[1]}, выбрано файлов{" "}
-            {valuesImported[2]}, обработано {valuesImported[3]}, значений {valuesImported[4]},
-            без семантики {valuesImported[5]}.
+            Raw values imported из batch `{valuesImported[0]}`: {valuesImported[1]} /{" "}
+            {valuesImported[2]}, выбрано файлов {valuesImported[3]}, обработано{" "}
+            {valuesImported[4]}, значений {valuesImported[5]}, без семантики{" "}
+            {valuesImported[6]}.
+          </p>
+        ) : null}
+        {docxValuesImported ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Canonical DOCX extraction: {docxValuesImported[0]} / {docxValuesImported[1]},
+            выбрано файлов {docxValuesImported[2]}, обработано {docxValuesImported[3]},
+            значений {docxValuesImported[4]}, без семантики {docxValuesImported[5]}, уникальных
+            структур {docxValuesImported[6]}.
           </p>
         ) : null}
         {mappingApplied ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            Pilot mapping F12/{mappingApplied[0]}: файлов {mappingApplied[1]}, черновиков
-            обновлено {mappingApplied[2]}, значений загружено в SubmissionValue{" "}
-            {mappingApplied[3]}, без уверенного match {mappingApplied[4]}.
+            Pilot mapping batch `{mappingApplied[0]}` / {mappingApplied[1]} / {mappingApplied[2]}
+            : файлов {mappingApplied[3]}, черновиков обновлено {mappingApplied[4]}, значений
+            загружено в SubmissionValue {mappingApplied[5]}, без уверенного match{" "}
+            {mappingApplied[6]}.
           </p>
         ) : null}
 
@@ -463,6 +677,31 @@ export default async function AdminArchivePage({
                   <summary
                     aria-label={`Пояснение к метрике ${metric.label}`}
                     className="flex h-6 w-6 cursor-pointer list-none items-center justify-center rounded-full border border-white/35 bg-white/10 text-xs font-semibold text-white transition hover:bg-white/20"
+                  >
+                    ?
+                  </summary>
+                  <div className="absolute right-0 z-10 mt-2 w-64 rounded-2xl bg-white p-3 text-xs leading-5 text-slate-700 shadow-2xl ring-1 ring-slate-200">
+                    {metric.help}
+                  </div>
+                </details>
+              </div>
+              <p className="mt-3 text-3xl font-semibold">{formatCount(metric.value)}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {docxDashboardMetrics.map((metric) => (
+            <article
+              key={metric.label}
+              className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-emerald-700">{metric.label}</p>
+                <details className="group relative shrink-0">
+                  <summary
+                    aria-label={`Пояснение к метрике ${metric.label}`}
+                    className="flex h-6 w-6 cursor-pointer list-none items-center justify-center rounded-full border border-emerald-300 bg-white/70 text-xs font-semibold text-emerald-800 transition hover:bg-white"
                   >
                     ?
                   </summary>
@@ -533,6 +772,30 @@ export default async function AdminArchivePage({
             </form>
 
             <form
+              action={importCanonicalDocxArchiveRegistryAction}
+              className="rounded-2xl bg-emerald-50 p-4"
+            >
+              <input type="hidden" name="returnTo" value="/admin/archive" />
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-950">
+                    2b. Импортировать канонический DOCX-реестр
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Сканирует `C:\python_projects\statforms_raw` и `statforms_docx_2024`,
+                    строит checksum-based registry и сопоставляет файлы с регионами приложения.
+                  </p>
+                </div>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-emerald-700 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-800"
+                >
+                  Импортировать DOCX registry
+                </button>
+              </div>
+            </form>
+
+            <form
               action={ensureArchiveYearlyFormsAction}
               className="rounded-2xl bg-slate-50 p-4"
             >
@@ -557,7 +820,7 @@ export default async function AdminArchivePage({
             </form>
 
             <form action={runArchivePilotImportAction} className="rounded-2xl bg-slate-50 p-4">
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_180px_180px] xl:items-end">
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_180px_180px_180px] xl:items-end">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-950">
                     4. Запустить пилот региональных черновиков
@@ -583,6 +846,20 @@ export default async function AdminArchivePage({
                         {code}
                       </option>
                     ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="pilotBatchId" className="text-sm font-medium text-slate-700">
+                    Источник
+                  </label>
+                  <select
+                    id="pilotBatchId"
+                    name="batchId"
+                    defaultValue={CANONICAL_DOCX_BATCH_NAME}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    <option value={HANDOFF_BATCH_NAME}>handoff</option>
+                    <option value={CANONICAL_DOCX_BATCH_NAME}>canonical-docx</option>
                   </select>
                 </div>
                 <div className="space-y-2">
@@ -685,18 +962,107 @@ export default async function AdminArchivePage({
               </div>
             </form>
 
-            <form action={applyArchiveF12MappingAction} className="rounded-2xl bg-slate-50 p-4">
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_160px_160px] xl:items-end">
+            <form action={importCanonicalDocxValuesAction} className="rounded-2xl bg-emerald-50 p-4">
+              <input type="hidden" name="batchId" value={CANONICAL_DOCX_BATCH_NAME} />
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_160px_160px_160px] xl:items-end">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-950">
-                    {"6. Применить pilot mapping F12 -> SubmissionValue"}
+                    5b. Извлечь raw значения из канонических DOCX
                   </h3>
                   <p className="mt-1 text-sm text-slate-600">
-                    Безопасный пилотный маппинг для `F12`: берет уже загруженные
-                    `ImportFieldValue`, сопоставляет их с полями архивной структуры по
-                    разделу/коду строки/графе и переносит только уверенные совпадения в
-                    региональные `SubmissionValue`.
+                    Для каждого выбранного DOCX вызывает Python extractor и passport builder,
+                    объединяет `xml_tag + value + table/row/column context` и заполняет
+                    `ImportFieldValue` напрямую из документа.
                   </p>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="docxValueFormCode" className="text-sm font-medium text-slate-700">
+                    Форма
+                  </label>
+                  <select
+                    id="docxValueFormCode"
+                    name="formCode"
+                    defaultValue={pilotOptions[0]}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    {pilotOptions.map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="docxValueYear" className="text-sm font-medium text-slate-700">
+                    Год
+                  </label>
+                  <select
+                    id="docxValueYear"
+                    name="year"
+                    defaultValue="2024"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    {targetYears.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="docxValueLimit" className="text-sm font-medium text-slate-700">
+                    Лимит файлов
+                  </label>
+                  <div className="flex gap-3">
+                    <input
+                      id="docxValueLimit"
+                      name="limit"
+                      type="number"
+                      min={1}
+                      max={200}
+                      defaultValue={10}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                    />
+                    <button
+                      type="submit"
+                      className="whitespace-nowrap rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-medium text-white transition hover:bg-emerald-800"
+                    >
+                      Извлечь
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </form>
+
+            <form action={applyArchivePilotMappingAction} className="rounded-2xl bg-slate-50 p-4">
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_160px_160px_160px_160px] xl:items-end">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-950">
+                    {"6. Применить pilot mapping -> SubmissionValue"}
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Безопасный пилотный маппинг для `F12/F14/F19/F30/F47`: берет уже
+                    загруженные `ImportFieldValue`, сопоставляет их с полями архивной
+                    структуры и переносит только уверенные совпадения в региональные
+                    `SubmissionValue`.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="mappingFormCode" className="text-sm font-medium text-slate-700">
+                    Форма
+                  </label>
+                  <select
+                    id="mappingFormCode"
+                    name="formCode"
+                    defaultValue={pilotOptions[0]}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    {pilotOptions.map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="space-y-2">
                   <label htmlFor="mappingYear" className="text-sm font-medium text-slate-700">
@@ -713,6 +1079,20 @@ export default async function AdminArchivePage({
                         {year}
                       </option>
                     ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="mappingBatchId" className="text-sm font-medium text-slate-700">
+                    Источник
+                  </label>
+                  <select
+                    id="mappingBatchId"
+                    name="batchId"
+                    defaultValue={CANONICAL_DOCX_BATCH_NAME}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                  >
+                    <option value={HANDOFF_BATCH_NAME}>handoff</option>
+                    <option value={CANONICAL_DOCX_BATCH_NAME}>canonical-docx</option>
                   </select>
                 </div>
                 <div className="space-y-2">
@@ -895,6 +1275,99 @@ export default async function AdminArchivePage({
                           ? "Частично"
                           : "Не загружено"}
                     </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-emerald-200 bg-white p-8 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-950">
+              Канонический DOCX quality matrix
+            </h2>
+            <p className="mt-2 max-w-3xl text-slate-600">
+              Этот срез показывает качество нового upstream прямо по реальным DOCX: сколько
+              файлов найдено, сколько extracted, сколько регионов покрыто и сколько уникальных
+              structure signatures обнаружено по каждой форме и году.
+            </p>
+          </div>
+          <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            DOCX batch files: {docxImportedFiles}, extracted: {docxExtractedFiles}, QA backlog:{" "}
+            {docxQaBacklog}
+          </div>
+        </div>
+
+        <div className="mt-6 overflow-x-auto rounded-3xl border border-emerald-200">
+          <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+            <thead>
+              <tr>
+                {[
+                  "Год",
+                  "Форма",
+                  "В registry",
+                  "EXTRACTED",
+                  "Регионов",
+                  "Staging values",
+                  "Structure signatures",
+                  "Submission coverage",
+                  "SubmissionValue",
+                ].map((label) => (
+                  <th
+                    key={label}
+                    className="border-b border-emerald-200 bg-emerald-50 px-4 py-3 font-medium text-emerald-900"
+                  >
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {docxMatrixRows.map((row) => (
+                <tr key={row.key}>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-900">
+                    {row.year}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 font-medium text-emerald-800">
+                    {row.formCode}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.importedDocs}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.extractedDocs}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    <div className="flex flex-col gap-1">
+                      <span>{row.distinctRegions}</span>
+                      {row.duplicateSubjectFiles > 0 || row.nullRegionFiles > 0 ? (
+                        <span className="text-xs text-amber-700">
+                          {[
+                            row.duplicateSubjectFiles > 0
+                              ? `дублей: ${row.duplicateSubjectFiles}`
+                              : null,
+                            row.nullRegionFiles > 0 ? `без региона: ${row.nullRegionFiles}` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(", ")}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.stagedValues}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.structureSignatures}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.mappedSubmissions}/{row.distinctRegions || 0}
+                  </td>
+                  <td className="border-b border-emerald-100 px-4 py-3 text-slate-700">
+                    {row.mappedValues}
                   </td>
                 </tr>
               ))}

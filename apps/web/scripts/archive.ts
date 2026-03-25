@@ -2,6 +2,10 @@ import "dotenv/config";
 
 import { prisma } from "../src/lib/prisma";
 import {
+  importCanonicalDocxArchiveRegistry,
+  importCanonicalDocxValuesToStaging,
+} from "../src/lib/archive/docx-service";
+import {
   applyArchiveF47PilotMapping,
   applyArchiveF30PilotMapping,
   applyArchiveF19PilotMapping,
@@ -25,8 +29,13 @@ function getArgValue(flag: string) {
   return index >= 0 ? process.argv[index + 1] : null;
 }
 
+function hasFlag(flag: string) {
+  return process.argv.includes(flag);
+}
+
 async function main() {
   const command = process.argv[2];
+  const batchId = getArgValue("--batch-id") ?? undefined;
 
   switch (command) {
     case "sync-regions": {
@@ -36,6 +45,11 @@ async function main() {
     }
     case "import-registry": {
       const result = await importHandoffArchiveRegistry();
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "import-docx-registry": {
+      const result = await importCanonicalDocxArchiveRegistry();
       console.log(JSON.stringify(result, null, 2));
       break;
     }
@@ -55,6 +69,7 @@ async function main() {
       const result = await createArchivePilotRegionSubmissions({
         formCode: formCode.toUpperCase(),
         year: Number(yearRaw),
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -70,6 +85,23 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "pull-docx-values": {
+      const formCode = getArgValue("--form") ?? undefined;
+      const yearRaw = getArgValue("--year");
+      const limitRaw = getArgValue("--limit");
+      const offsetRaw = getArgValue("--offset");
+
+      const result = await importCanonicalDocxValuesToStaging({
+        formCode: formCode?.toUpperCase(),
+        year: yearRaw ? Number(yearRaw) : undefined,
+        limit: limitRaw ? Number(limitRaw) : undefined,
+        offset: offsetRaw ? Number(offsetRaw) : undefined,
+        matchedOnly: hasFlag("--matched-only"),
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -83,6 +115,7 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -96,6 +129,7 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -109,6 +143,7 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -122,6 +157,7 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -135,6 +171,7 @@ async function main() {
         year: yearRaw ? Number(yearRaw) : undefined,
         limit: limitRaw ? Number(limitRaw) : undefined,
         offset: offsetRaw ? Number(offsetRaw) : undefined,
+        batchId,
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -196,7 +233,7 @@ async function main() {
     }
     default:
       throw new Error(
-        "Неизвестная команда. Используйте: sync-regions | import-registry | prepare-forms | pilot | pull-values | map-f12 | map-f14 | map-f19 | map-f30 | map-f47 | enrich-f12 | enrich-f14 | enrich-f19 | enrich-f30 | enrich-f47",
+        "Неизвестная команда. Используйте: sync-regions | import-registry | import-docx-registry | prepare-forms | pilot | pull-values | pull-docx-values | map-f12 | map-f14 | map-f19 | map-f30 | map-f47 | enrich-f12 | enrich-f14 | enrich-f19 | enrich-f30 | enrich-f47",
       );
   }
 }

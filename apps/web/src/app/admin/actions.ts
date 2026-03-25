@@ -21,6 +21,10 @@ import {
   requireSuperadmin,
 } from "@/lib/access";
 import {
+  applyArchiveF14PilotMapping,
+  applyArchiveF19PilotMapping,
+  applyArchiveF30PilotMapping,
+  applyArchiveF47PilotMapping,
   applyArchiveF12PilotMapping,
   createArchivePilotRegionSubmissions,
   ensureArchiveYearlyFormVersions,
@@ -28,6 +32,10 @@ import {
   importHandoffArchiveRegistry,
   syncCanonicalRegionsFromHandoff,
 } from "@/lib/archive/service";
+import {
+  importCanonicalDocxArchiveRegistry,
+  importCanonicalDocxValuesToStaging,
+} from "@/lib/archive/docx-service";
 import {
   normalizeRuntimeValue,
   RuntimeValueMap,
@@ -171,17 +179,21 @@ const reviewedSubmissionPayloadSchema = z.object({
 const archivePilotImportSchema = z.object({
   formCode: z.string().trim().min(1, "Укажите код формы."),
   year: z.coerce.number().int().min(2019).max(2026),
+  batchId: z.string().trim().optional(),
 });
 
 const archiveValueImportSchema = z.object({
   formCode: z.string().trim().min(1, "Укажите код формы."),
   year: z.coerce.number().int().min(2019).max(2026),
   limit: z.coerce.number().int().positive().max(500).optional(),
+  batchId: z.string().trim().optional(),
 });
 
 const archiveMappingSchema = z.object({
+  formCode: z.string().trim().min(1, "Укажите код формы."),
   year: z.coerce.number().int().min(2019).max(2026),
   limit: z.coerce.number().int().positive().max(500).optional(),
+  batchId: z.string().trim().optional(),
 });
 
 const archiveReturnToSchema = z.object({
@@ -318,6 +330,30 @@ async function ensureUniqueSyntheticEmail(baseValue: string, excludeUserId?: str
 
 function getEmailLocalBase(email: string) {
   return email.split("@")[0] ?? email;
+}
+
+async function applyArchivePilotMappingByForm(params: {
+  formCode: string;
+  year: number;
+  limit?: number;
+  batchId?: string;
+}) {
+  const normalizedCode = params.formCode.trim().toUpperCase();
+
+  switch (normalizedCode) {
+    case "F12":
+      return applyArchiveF12PilotMapping(params);
+    case "F14":
+      return applyArchiveF14PilotMapping(params);
+    case "F19":
+      return applyArchiveF19PilotMapping(params);
+    case "F30":
+      return applyArchiveF30PilotMapping(params);
+    case "F47":
+      return applyArchiveF47PilotMapping(params);
+    default:
+      throw new Error(`Для формы ${normalizedCode} pilot mapping пока не реализован.`);
+  }
 }
 
 async function getScopedOperator(currentUserId: string, operatorId: string) {
@@ -2160,6 +2196,24 @@ export async function importHandoffArchiveRegistryAction(formData: FormData) {
   );
 }
 
+export async function importCanonicalDocxArchiveRegistryAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveReturnToSchema.parse({
+    returnTo: formData.get("returnTo"),
+  });
+
+  const result = await importCanonicalDocxArchiveRegistry();
+  revalidatePath("/admin/archive");
+  revalidatePath("/admin/archive/qa");
+
+  redirect(
+    `${parsed.returnTo || "/admin/archive"}?docxRegistryImported=${encodeURIComponent(
+      `${result.totalEntries}|${result.createdFiles}|${result.updatedFiles}|${result.matchedRegions}|${result.unmatchedRegions}`,
+    )}`,
+  );
+}
+
 export async function ensureArchiveYearlyFormsAction(formData: FormData) {
   await requireSuperadmin();
 
@@ -2184,6 +2238,7 @@ export async function runArchivePilotImportAction(formData: FormData) {
   const parsed = archivePilotImportSchema.parse({
     formCode: formData.get("formCode"),
     year: formData.get("year"),
+    batchId: formData.get("batchId") || undefined,
   });
 
   const result = await createArchivePilotRegionSubmissions(parsed);
@@ -2192,7 +2247,7 @@ export async function runArchivePilotImportAction(formData: FormData) {
 
   redirect(
     `/admin/archive?pilotImported=${encodeURIComponent(
-      `${result.formCode}|${result.year}|${result.candidateFiles}|${result.createdAssignments}|${result.createdSubmissions}|${result.skippedWithoutRegionCenter}`,
+      `${parsed.batchId ?? "handoff"}|${result.formCode}|${result.year}|${result.candidateFiles}|${result.createdAssignments}|${result.createdSubmissions}|${result.skippedWithoutRegionCenter}`,
     )}`,
   );
 }
@@ -2204,6 +2259,7 @@ export async function importArchiveRawValuesAction(formData: FormData) {
     formCode: formData.get("formCode"),
     year: formData.get("year"),
     limit: formData.get("limit") || undefined,
+    batchId: formData.get("batchId") || undefined,
   });
 
   try {
@@ -2212,7 +2268,7 @@ export async function importArchiveRawValuesAction(formData: FormData) {
 
     redirect(
       `/admin/archive?valuesImported=${encodeURIComponent(
-        `${parsed.formCode}|${parsed.year}|${result.selectedFiles}|${result.importedFiles}|${result.totalValues}|${result.missingSemantics}`,
+        `${parsed.batchId ?? "handoff"}|${parsed.formCode}|${parsed.year}|${result.selectedFiles}|${result.importedFiles}|${result.totalValues}|${result.missingSemantics}`,
       )}`,
     );
   } catch (error) {
@@ -2224,31 +2280,68 @@ export async function importArchiveRawValuesAction(formData: FormData) {
   }
 }
 
-export async function applyArchiveF12MappingAction(formData: FormData) {
+export async function importCanonicalDocxValuesAction(formData: FormData) {
   await requireSuperadmin();
 
-  const parsed = archiveMappingSchema.parse({
+  const parsed = archiveValueImportSchema.parse({
+    formCode: formData.get("formCode"),
     year: formData.get("year"),
     limit: formData.get("limit") || undefined,
+    batchId: formData.get("batchId") || undefined,
   });
 
   try {
-    const result = await applyArchiveF12PilotMapping(parsed);
+    const result = await importCanonicalDocxValuesToStaging(parsed);
     revalidatePath("/admin/archive");
-    revalidatePath("/admin/forms");
+    revalidatePath("/admin/archive/qa");
 
     redirect(
-      `/admin/archive?mappingApplied=${encodeURIComponent(
-        `${parsed.year}|${result.selectedFiles}|${result.mappedSubmissions}|${result.mappedValues}|${result.unmatchedValues}`,
+      `/admin/archive?docxValuesImported=${encodeURIComponent(
+        `${parsed.formCode}|${parsed.year}|${result.selectedFiles}|${result.importedFiles}|${result.totalValues}|${result.missingSemantics}|${result.uniqueStructureSignatures}`,
       )}`,
     );
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Не удалось применить pilot mapping F12 к региональным черновикам.";
+        : "Не удалось импортировать raw значения из канонического DOCX-архива.";
     redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
   }
+}
+
+export async function applyArchivePilotMappingAction(formData: FormData) {
+  await requireSuperadmin();
+
+  const parsed = archiveMappingSchema.parse({
+    formCode: formData.get("formCode"),
+    year: formData.get("year"),
+    limit: formData.get("limit") || undefined,
+    batchId: formData.get("batchId") || undefined,
+  });
+
+  try {
+    const result = await applyArchivePilotMappingByForm(parsed);
+    revalidatePath("/admin/archive");
+    revalidatePath("/admin/forms");
+
+    redirect(
+      `/admin/archive?mappingApplied=${encodeURIComponent(
+        `${parsed.batchId ?? "handoff"}|${parsed.formCode}|${parsed.year}|${result.selectedFiles}|${result.mappedSubmissions}|${result.mappedValues}|${result.unmatchedValues}`,
+      )}`,
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Не удалось применить pilot mapping к региональным черновикам.";
+    redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
+  }
+}
+
+export async function applyArchiveF12MappingAction(formData: FormData) {
+  const payload = new FormData(formData);
+  payload.set("formCode", "F12");
+  return applyArchivePilotMappingAction(payload);
 }
 
 export async function createArchiveQaIssueAction(formData: FormData) {

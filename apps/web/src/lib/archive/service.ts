@@ -1334,6 +1334,7 @@ export async function ensureArchiveYearlyFormVersions() {
 export async function createArchivePilotRegionSubmissions(params: {
   formCode: string;
   year: number;
+  batchId?: string;
 }) {
   const [formType, reportingYear, regionFiles, version] = await Promise.all([
     prisma.formType.findUnique({
@@ -1344,7 +1345,7 @@ export async function createArchivePilotRegionSubmissions(params: {
     }),
     prisma.importFile.findMany({
       where: {
-        batchId: HANDOFF_BATCH_NAME,
+        batchId: params.batchId ?? HANDOFF_BATCH_NAME,
         regionId: {
           not: null,
         },
@@ -1460,7 +1461,7 @@ export async function createArchivePilotRegionSubmissions(params: {
           organizationId: regionCenter.id,
           status: SubmissionStatus.DRAFT,
           reviewComment:
-            `Архивная заготовка создана из handoff-реестра. Исходный документ: ${file.storagePath}. ` +
+            `Архивная заготовка создана из batch ${params.batchId ?? HANDOFF_BATCH_NAME}. Исходный документ: ${file.storagePath}. ` +
             "Значения пока не перенесены автоматически и могут быть заполнены регионом вручную.",
         },
       });
@@ -1487,10 +1488,11 @@ export async function importArchiveRawValuesToStaging(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const files = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       ...(params?.formCode
         ? {
             formType: {
@@ -2803,11 +2805,12 @@ export async function applyArchiveF12PilotMapping(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       status: ImportFileStatus.EXTRACTED,
       regionId: {
         not: null,
@@ -3307,11 +3310,12 @@ export async function applyArchiveF14PilotMapping(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       status: ImportFileStatus.EXTRACTED,
       regionId: {
         not: null,
@@ -3660,11 +3664,12 @@ export async function applyArchiveF19PilotMapping(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       status: ImportFileStatus.EXTRACTED,
       regionId: {
         not: null,
@@ -4012,11 +4017,12 @@ export async function applyArchiveF30PilotMapping(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       status: ImportFileStatus.EXTRACTED,
       regionId: {
         not: null,
@@ -4613,11 +4619,12 @@ export async function applyArchiveF47PilotMapping(params?: {
   year?: number;
   limit?: number;
   offset?: number;
+  batchId?: string;
 }) {
   const targetYear = params?.year ?? 2024;
   const extractedFiles = await prisma.importFile.findMany({
     where: {
-      batchId: HANDOFF_BATCH_NAME,
+      batchId: params?.batchId ?? HANDOFF_BATCH_NAME,
       status: ImportFileStatus.EXTRACTED,
       regionId: {
         not: null,
