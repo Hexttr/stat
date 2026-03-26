@@ -138,6 +138,7 @@ async function main() {
         offset: offsetRaw ? Number(offsetRaw) : undefined,
         matchedOnly: hasFlag("--matched-only"),
         concurrency: concurrencyRaw ? Number(concurrencyRaw) : undefined,
+        skipExtracted: hasFlag("--skip-extracted"),
       });
       console.log(JSON.stringify(result, null, 2));
       break;
@@ -187,6 +188,7 @@ async function main() {
           offset,
           matchedOnly,
           concurrency,
+          skipExtracted: hasFlag("--skip-extracted"),
         });
         console.log(
           `[run-docx-pipeline] ${formCode}/${year}: extraction done`,

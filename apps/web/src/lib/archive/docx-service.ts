@@ -562,10 +562,18 @@ export async function importCanonicalDocxValuesToStaging(params?: {
   offset?: number;
   matchedOnly?: boolean;
   concurrency?: number;
+  skipExtracted?: boolean;
 }) {
   const files = await prisma.importFile.findMany({
     where: {
       batchId: CANONICAL_DOCX_BATCH_NAME,
+      ...(params?.skipExtracted
+        ? {
+            status: {
+              not: ImportFileStatus.EXTRACTED,
+            },
+          }
+        : {}),
       ...(params?.matchedOnly
         ? {
             regionId: {

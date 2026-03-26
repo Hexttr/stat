@@ -2826,7 +2826,6 @@ export async function applyArchiveF12PilotMapping(params?: {
       region: true,
       reportingYear: true,
       formType: true,
-      fieldValues: true,
     },
     orderBy: {
       storagePath: "asc",
@@ -2872,9 +2871,6 @@ export async function applyArchiveF12PilotMapping(params?: {
         },
       },
       submissions: {
-        include: {
-          values: true,
-        },
         orderBy: {
           updatedAt: "desc",
         },
@@ -2901,6 +2897,17 @@ export async function applyArchiveF12PilotMapping(params?: {
     if (!assignment || !submission) {
       continue;
     }
+
+    const fileFieldValues = await prisma.importFieldValue.findMany({
+      where: {
+        importFileId: file.id,
+      },
+      select: {
+        contextJson: true,
+        valueText: true,
+        valueNumber: true,
+      },
+    });
 
     const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
       tables?: Array<{
@@ -3029,7 +3036,7 @@ export async function applyArchiveF12PilotMapping(params?: {
 
     const rawRowRankByTableCode = new Map<string, Map<string, number>>();
     const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
@@ -3089,7 +3096,7 @@ export async function applyArchiveF12PilotMapping(params?: {
     >();
     let fileUnmatched = 0;
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
@@ -3331,7 +3338,6 @@ export async function applyArchiveF14PilotMapping(params?: {
       region: true,
       reportingYear: true,
       formType: true,
-      fieldValues: true,
     },
     orderBy: {
       storagePath: "asc",
@@ -3377,9 +3383,6 @@ export async function applyArchiveF14PilotMapping(params?: {
         },
       },
       submissions: {
-        include: {
-          values: true,
-        },
         orderBy: {
           updatedAt: "desc",
         },
@@ -3406,6 +3409,17 @@ export async function applyArchiveF14PilotMapping(params?: {
     if (!assignment || !submission) {
       continue;
     }
+
+    const fileFieldValues = await prisma.importFieldValue.findMany({
+      where: {
+        importFileId: file.id,
+      },
+      select: {
+        contextJson: true,
+        valueText: true,
+        valueNumber: true,
+      },
+    });
 
     const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
       tables?: Array<{
@@ -3516,7 +3530,7 @@ export async function applyArchiveF14PilotMapping(params?: {
     let fileUnmatched = 0;
     const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         colNo?: string | null;
@@ -3541,7 +3555,7 @@ export async function applyArchiveF14PilotMapping(params?: {
         });
     }
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
@@ -3685,7 +3699,6 @@ export async function applyArchiveF19PilotMapping(params?: {
       region: true,
       reportingYear: true,
       formType: true,
-      fieldValues: true,
     },
     orderBy: {
       storagePath: "asc",
@@ -3731,9 +3744,6 @@ export async function applyArchiveF19PilotMapping(params?: {
         },
       },
       submissions: {
-        include: {
-          values: true,
-        },
         orderBy: {
           updatedAt: "desc",
         },
@@ -3760,6 +3770,17 @@ export async function applyArchiveF19PilotMapping(params?: {
     if (!assignment || !submission) {
       continue;
     }
+
+    const fileFieldValues = await prisma.importFieldValue.findMany({
+      where: {
+        importFileId: file.id,
+      },
+      select: {
+        contextJson: true,
+        valueText: true,
+        valueNumber: true,
+      },
+    });
 
     const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
       tables?: Array<{
@@ -3870,7 +3891,7 @@ export async function applyArchiveF19PilotMapping(params?: {
     let fileUnmatched = 0;
     const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         colNo?: string | null;
@@ -3895,7 +3916,7 @@ export async function applyArchiveF19PilotMapping(params?: {
         });
     }
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
@@ -4038,7 +4059,6 @@ export async function applyArchiveF30PilotMapping(params?: {
       region: true,
       reportingYear: true,
       formType: true,
-      fieldValues: true,
     },
     orderBy: {
       storagePath: "asc",
@@ -4084,9 +4104,6 @@ export async function applyArchiveF30PilotMapping(params?: {
         },
       },
       submissions: {
-        include: {
-          values: true,
-        },
         orderBy: {
           updatedAt: "desc",
         },
@@ -4113,6 +4130,17 @@ export async function applyArchiveF30PilotMapping(params?: {
     if (!assignment || !submission) {
       continue;
     }
+
+    const fileFieldValues = await prisma.importFieldValue.findMany({
+      where: {
+        importFileId: file.id,
+      },
+      select: {
+        contextJson: true,
+        valueText: true,
+        valueNumber: true,
+      },
+    });
 
     const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
       tables?: Array<{
@@ -4223,7 +4251,7 @@ export async function applyArchiveF30PilotMapping(params?: {
     let fileUnmatched = 0;
     const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         colNo?: string | null;
@@ -4248,7 +4276,7 @@ export async function applyArchiveF30PilotMapping(params?: {
         });
     }
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
@@ -4640,7 +4668,6 @@ export async function applyArchiveF47PilotMapping(params?: {
       region: true,
       reportingYear: true,
       formType: true,
-      fieldValues: true,
     },
     orderBy: {
       storagePath: "asc",
@@ -4686,9 +4713,6 @@ export async function applyArchiveF47PilotMapping(params?: {
         },
       },
       submissions: {
-        include: {
-          values: true,
-        },
         orderBy: {
           updatedAt: "desc",
         },
@@ -4715,6 +4739,17 @@ export async function applyArchiveF47PilotMapping(params?: {
     if (!assignment || !submission) {
       continue;
     }
+
+    const fileFieldValues = await prisma.importFieldValue.findMany({
+      where: {
+        importFileId: file.id,
+      },
+      select: {
+        contextJson: true,
+        valueText: true,
+        valueNumber: true,
+      },
+    });
 
     const templateSchema = (assignment.templateVersion.schemaJson ?? {}) as {
       tables?: Array<{
@@ -4825,7 +4860,7 @@ export async function applyArchiveF47PilotMapping(params?: {
     let fileUnmatched = 0;
     const rawColumnRankByTableCode = new Map<string, Map<string, number>>();
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         colNo?: string | null;
@@ -4850,7 +4885,7 @@ export async function applyArchiveF47PilotMapping(params?: {
         });
     }
 
-    for (const fieldValue of file.fieldValues) {
+    for (const fieldValue of fileFieldValues) {
       const context = (fieldValue.contextJson ?? {}) as {
         tableCode?: string | null;
         rowNo?: string | null;
