@@ -3,10 +3,12 @@ import { notFound } from "next/navigation";
 
 import {
   reviewSubmissionAction,
+  saveArchiveStructureOverridesAction,
   saveReviewedSubmissionValuesAction,
 } from "@/app/admin/actions";
 import { ReviewEditableSubmissionForm } from "@/app/admin/forms/review/review-editable-submission-form";
 import {
+  ArchiveStructureOverrideTargetType,
   OrganizationType,
   RoleType,
   SubmissionStatus,
@@ -50,6 +52,24 @@ function getInitialSubmissionValues(params: {
       return [field.key, existingValue.valueText ?? ""];
     }),
   ) satisfies RuntimeValueMap;
+}
+
+function parseNotice(value: string | string[] | undefined, expectedLength: number) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const decoded = decodeURIComponent(value).split("|");
+  return decoded.length >= expectedLength ? decoded : null;
+}
+
+function createStructureOverrideKey(params: {
+  targetType: ArchiveStructureOverrideTargetType;
+  tableId: string;
+  rowKey?: string | null;
+  columnKey?: string | null;
+}) {
+  return `${params.targetType}|${params.tableId}|${params.rowKey ?? ""}|${params.columnKey ?? ""}`;
 }
 
 function formatSubmissionStatus(status: SubmissionStatus) {
@@ -227,12 +247,127 @@ export default async function AdminSubmissionReviewPage({
   }
 
   const schema = formBuilderSchema.parse(submission.assignment.templateVersion.schemaJson);
+  const structureOverrides = await prisma.archiveStructureOverride.findMany({
+    where: {
+      formTypeId: submission.assignment.templateVersion.template.formType.id,
+      reportingYearId: submission.assignment.templateVersion.reportingYear.id,
+    },
+    orderBy: [
+      { tableId: "asc" },
+      { targetType: "asc" },
+      { rowKey: "asc" },
+      { columnKey: "asc" },
+    ],
+  });
+  const structureOverrideByKey = new Map(
+    structureOverrides.map((override) => [
+      createStructureOverrideKey({
+        targetType: override.targetType,
+        tableId: override.tableId,
+        rowKey: override.rowKey,
+        columnKey: override.columnKey,
+      }),
+      override,
+    ]),
+  );
+  const structureEntries = schema.tables.flatMap((table) => {
+    const entries: Array<{
+      targetType: ArchiveStructureOverrideTargetType;
+      tableId: string;
+      rowKey: string | null;
+      columnKey: string | null;
+      originalLabel: string;
+      currentLabel: string;
+      overrideId: string | null;
+      note: string | null;
+    }> = [];
+
+    const tableOverride = structureOverrideByKey.get(
+      createStructureOverrideKey({
+        targetType: ArchiveStructureOverrideTargetType.TABLE_TITLE,
+        tableId: table.id,
+      }),
+    );
+    entries.push({
+      targetType: ArchiveStructureOverrideTargetType.TABLE_TITLE,
+      tableId: table.id,
+      rowKey: null,
+      columnKey: null,
+      originalLabel: table.title,
+      currentLabel: tableOverride?.overrideLabel ?? table.title,
+      overrideId: tableOverride?.id ?? null,
+      note: tableOverride?.note ?? null,
+    });
+
+    for (const row of table.rows) {
+      const rowOverride = structureOverrideByKey.get(
+        createStructureOverrideKey({
+          targetType: ArchiveStructureOverrideTargetType.ROW_LABEL,
+          tableId: table.id,
+          rowKey: row.key,
+        }),
+      );
+      entries.push({
+        targetType: ArchiveStructureOverrideTargetType.ROW_LABEL,
+        tableId: table.id,
+        rowKey: row.key,
+        columnKey: null,
+        originalLabel: row.label,
+        currentLabel: rowOverride?.overrideLabel ?? row.label,
+        overrideId: rowOverride?.id ?? null,
+        note: rowOverride?.note ?? null,
+      });
+    }
+
+    for (const column of table.descriptorColumns) {
+      const columnOverride = structureOverrideByKey.get(
+        createStructureOverrideKey({
+          targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+          tableId: table.id,
+          columnKey: column.key,
+        }),
+      );
+      entries.push({
+        targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+        tableId: table.id,
+        rowKey: null,
+        columnKey: column.key,
+        originalLabel: column.label,
+        currentLabel: columnOverride?.overrideLabel ?? column.label,
+        overrideId: columnOverride?.id ?? null,
+        note: columnOverride?.note ?? null,
+      });
+    }
+
+    for (const column of table.columns) {
+      const columnOverride = structureOverrideByKey.get(
+        createStructureOverrideKey({
+          targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+          tableId: table.id,
+          columnKey: column.key,
+        }),
+      );
+      entries.push({
+        targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+        tableId: table.id,
+        rowKey: null,
+        columnKey: column.key,
+        originalLabel: column.label,
+        currentLabel: columnOverride?.overrideLabel ?? column.label,
+        overrideId: columnOverride?.id ?? null,
+        note: columnOverride?.note ?? null,
+      });
+    }
+
+    return entries;
+  });
   const values = getInitialSubmissionValues({
     fields: submission.assignment.templateVersion.fields,
     values: submission.values,
   });
   const saved = resolvedSearchParams.saved === "1";
   const updated = resolvedSearchParams.updated === "1";
+  const structureSaved = parseNotice(resolvedSearchParams.structureSaved, 3);
   const error =
     typeof resolvedSearchParams.error === "string"
       ? decodeURIComponent(resolvedSearchParams.error)
@@ -295,6 +430,12 @@ export default async function AdminSubmissionReviewPage({
         {saved ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Изменения в значениях формы сохранены.
+          </p>
+        ) : null}
+        {structureSaved ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Подписи структуры сохранены: {structureSaved[0]} / {structureSaved[1]}, элементов:{" "}
+            {structureSaved[2]}.
           </p>
         ) : null}
 
@@ -402,10 +543,10 @@ export default async function AdminSubmissionReviewPage({
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-slate-950">Данные формы</h2>
+            <h2 className="text-2xl font-semibold text-slate-950">Проверка формы</h2>
             <p className="mt-2 max-w-3xl text-slate-600">
-              Здесь можно исправить значения прямо в текущем `Submission`, сохранить правки и
-              затем принять или вернуть форму без перехода на другой экран.
+              На этом экране доступны два режима: правка значений в текущем `Submission` и
+              правка структуры для всей формы этого года.
             </p>
           </div>
         </div>
@@ -415,6 +556,10 @@ export default async function AdminSubmissionReviewPage({
           schema={schema}
           initialValues={values}
           saveAction={saveReviewedSubmissionValuesAction}
+          structureEntries={structureEntries}
+          structureSaveAction={saveArchiveStructureOverridesAction}
+          formTypeId={submission.assignment.templateVersion.template.formType.id}
+          reportingYearId={submission.assignment.templateVersion.reportingYear.id}
           errorMessage={error}
         />
       </section>
