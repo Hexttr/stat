@@ -26,35 +26,36 @@ type Props = {
   readOnly?: boolean;
   errors?: Record<string, string>;
   structureEditing?: {
+    onUpdateTableTitle?: (tableId: string, title: string) => void;
     onUpdateRowLabel: (tableId: string, rowId: string, label: string) => void;
-    onInsertRow: (
+    onInsertRow?: (
       tableId: string,
       anchorRowId: string,
       position: "before" | "after",
     ) => void;
-    onDeleteRow: (tableId: string, rowId: string) => void;
+    onDeleteRow?: (tableId: string, rowId: string) => void;
     onUpdateDescriptorColumnLabel: (
       tableId: string,
       columnId: string,
       label: string,
     ) => void;
-    onInsertDescriptorColumn: (
+    onInsertDescriptorColumn?: (
       tableId: string,
       anchorColumnId: string,
       position: "before" | "after",
     ) => void;
-    onDeleteDescriptorColumn: (tableId: string, columnId: string) => void;
+    onDeleteDescriptorColumn?: (tableId: string, columnId: string) => void;
     onUpdateInputColumnLabel: (
       tableId: string,
       columnId: string,
       label: string,
     ) => void;
-    onInsertInputColumn: (
+    onInsertInputColumn?: (
       tableId: string,
       anchorColumnId: string,
       position: "before" | "after",
     ) => void;
-    onDeleteInputColumn: (tableId: string, columnId: string) => void;
+    onDeleteInputColumn?: (tableId: string, columnId: string) => void;
   };
 };
 
@@ -443,27 +444,35 @@ const RuntimeTableRow = memo(function RuntimeTableRow({
                 )}
                 style={{ paddingLeft: `${12 + row.indent * 20}px` }}
               />
-              <div className="flex flex-wrap gap-2">
-                <TableActionButton
-                  type="button"
-                  onClick={() => structureEditing?.onInsertRow(tableId, row.id, "before")}
-                >
-                  + выше
-                </TableActionButton>
-                <TableActionButton
-                  type="button"
-                  onClick={() => structureEditing?.onInsertRow(tableId, row.id, "after")}
-                >
-                  + ниже
-                </TableActionButton>
-                <TableActionButton
-                  type="button"
-                  onClick={() => structureEditing?.onDeleteRow(tableId, row.id)}
-                  className="border-red-300 text-red-700 hover:bg-red-50"
-                >
-                  удалить
-                </TableActionButton>
-              </div>
+              {structureEditing?.onInsertRow || structureEditing?.onDeleteRow ? (
+                <div className="flex flex-wrap gap-2">
+                  {structureEditing?.onInsertRow ? (
+                    <>
+                      <TableActionButton
+                        type="button"
+                        onClick={() => structureEditing.onInsertRow?.(tableId, row.id, "before")}
+                      >
+                        + выше
+                      </TableActionButton>
+                      <TableActionButton
+                        type="button"
+                        onClick={() => structureEditing.onInsertRow?.(tableId, row.id, "after")}
+                      >
+                        + ниже
+                      </TableActionButton>
+                    </>
+                  ) : null}
+                  {structureEditing?.onDeleteRow ? (
+                    <TableActionButton
+                      type="button"
+                      onClick={() => structureEditing.onDeleteRow?.(tableId, row.id)}
+                      className="border-red-300 text-red-700 hover:bg-red-50"
+                    >
+                      удалить
+                    </TableActionButton>
+                  ) : null}
+                </div>
+              ) : null}
               {row.groupPrefix ? (
                 <p className="text-xs text-slate-500">Префикс: {row.groupPrefix}</p>
               ) : null}
@@ -573,7 +582,7 @@ export function RuntimeFormRenderer({
   errors = {},
   structureEditing,
 }: Props) {
-  const canEditStructure = Boolean(structureEditing) && !readOnly;
+  const canEditStructure = Boolean(structureEditing);
 
   return (
     <div className="space-y-8">
@@ -649,7 +658,15 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
   return (
     <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-5">
-        <h3 className="text-lg font-semibold text-slate-950">{table.title}</h3>
+        {canEditStructure && structureEditing?.onUpdateTableTitle ? (
+          <input
+            value={table.title}
+            onChange={(event) => structureEditing.onUpdateTableTitle?.(table.id, event.target.value)}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-lg font-semibold text-slate-950"
+          />
+        ) : (
+          <h3 className="text-lg font-semibold text-slate-950">{table.title}</h3>
+        )}
         {table.description ? <p className="mt-2 text-sm text-slate-600">{table.description}</p> : null}
       </div>
 
@@ -686,41 +703,49 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
                     ) : (
                       <p>{column.label}</p>
                     )}
-                    {canEditStructure ? (
+                    {canEditStructure &&
+                    (structureEditing?.onInsertDescriptorColumn ||
+                      structureEditing?.onDeleteDescriptorColumn) ? (
                       <div className="flex flex-wrap gap-2">
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onInsertDescriptorColumn(
-                              table.id,
-                              column.id,
-                              "before",
-                            )
-                          }
-                        >
-                          + слева
-                        </TableActionButton>
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onInsertDescriptorColumn(
-                              table.id,
-                              column.id,
-                              "after",
-                            )
-                          }
-                        >
-                          + справа
-                        </TableActionButton>
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onDeleteDescriptorColumn(table.id, column.id)
-                          }
-                          className="border-red-300 text-red-700 hover:bg-red-50"
-                        >
-                          удалить
-                        </TableActionButton>
+                        {structureEditing?.onInsertDescriptorColumn ? (
+                          <>
+                            <TableActionButton
+                              type="button"
+                              onClick={() =>
+                                structureEditing.onInsertDescriptorColumn?.(
+                                  table.id,
+                                  column.id,
+                                  "before",
+                                )
+                              }
+                            >
+                              + слева
+                            </TableActionButton>
+                            <TableActionButton
+                              type="button"
+                              onClick={() =>
+                                structureEditing.onInsertDescriptorColumn?.(
+                                  table.id,
+                                  column.id,
+                                  "after",
+                                )
+                              }
+                            >
+                              + справа
+                            </TableActionButton>
+                          </>
+                        ) : null}
+                        {structureEditing?.onDeleteDescriptorColumn ? (
+                          <TableActionButton
+                            type="button"
+                            onClick={() =>
+                              structureEditing.onDeleteDescriptorColumn?.(table.id, column.id)
+                            }
+                            className="border-red-300 text-red-700 hover:bg-red-50"
+                          >
+                            удалить
+                          </TableActionButton>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -753,41 +778,40 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
                         {[column.unit, column.helpText].filter(Boolean).join(" / ")}
                       </p>
                     ) : null}
-                    {canEditStructure ? (
+                    {canEditStructure &&
+                    (structureEditing?.onInsertInputColumn || structureEditing?.onDeleteInputColumn) ? (
                       <div className="flex flex-wrap gap-2 pt-1">
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onInsertInputColumn(
-                              table.id,
-                              column.id,
-                              "before",
-                            )
-                          }
-                        >
-                          + слева
-                        </TableActionButton>
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onInsertInputColumn(
-                              table.id,
-                              column.id,
-                              "after",
-                            )
-                          }
-                        >
-                          + справа
-                        </TableActionButton>
-                        <TableActionButton
-                          type="button"
-                          onClick={() =>
-                            structureEditing?.onDeleteInputColumn(table.id, column.id)
-                          }
-                          className="border-red-300 text-red-700 hover:bg-red-50"
-                        >
-                          удалить
-                        </TableActionButton>
+                        {structureEditing?.onInsertInputColumn ? (
+                          <>
+                            <TableActionButton
+                              type="button"
+                              onClick={() =>
+                                structureEditing.onInsertInputColumn?.(table.id, column.id, "before")
+                              }
+                            >
+                              + слева
+                            </TableActionButton>
+                            <TableActionButton
+                              type="button"
+                              onClick={() =>
+                                structureEditing.onInsertInputColumn?.(table.id, column.id, "after")
+                              }
+                            >
+                              + справа
+                            </TableActionButton>
+                          </>
+                        ) : null}
+                        {structureEditing?.onDeleteInputColumn ? (
+                          <TableActionButton
+                            type="button"
+                            onClick={() =>
+                              structureEditing.onDeleteInputColumn?.(table.id, column.id)
+                            }
+                            className="border-red-300 text-red-700 hover:bg-red-50"
+                          >
+                            удалить
+                          </TableActionButton>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

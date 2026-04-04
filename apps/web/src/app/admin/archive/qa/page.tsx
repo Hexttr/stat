@@ -5,6 +5,7 @@ import {
   resetArchiveStructureOverrideAction,
   saveArchiveStructureOverridesAction,
 } from "@/app/admin/actions";
+import { ArchiveStructureEditor } from "@/app/admin/archive/qa/archive-structure-editor";
 import {
   ArchiveStructureOverrideTargetType,
   ImportFileStatus,
@@ -121,10 +122,6 @@ function parseNotice(value: string | string[] | undefined, expectedLength: numbe
 
   const decoded = decodeURIComponent(value).split("|");
   return decoded.length >= expectedLength ? decoded : null;
-}
-
-function createStructureFieldName(index: number, field: string) {
-  return `overrides.${index}.${field}`;
 }
 
 function HelpHint({ text, label }: { text: string; label: string }) {
@@ -1210,184 +1207,23 @@ export default async function AdminArchiveQaPage({
                   </div>
                 </div>
 
-                {selectedSubmission ? (
-                  <form action={saveArchiveStructureOverridesAction} className="mt-6 space-y-6">
-                    <input type="hidden" name="formTypeId" value={selectedFile.formTypeId ?? ""} />
-                    <input
-                      type="hidden"
-                      name="reportingYearId"
-                      value={selectedFile.reportingYearId ?? ""}
-                    />
-                    <input
-                      type="hidden"
-                      name="returnTo"
-                      value={buildQaHref({
-                        year: effectiveYear,
-                        formCode: effectiveFormCode,
-                        regionId: effectiveRegionId,
-                        importFileId: selectedFile.id,
-                        page: safePage,
-                        problemOnly,
-                        loadValues,
-                      })}
-                    />
-                    <div className="space-y-5">
-                      {selectedStructureTables.map((table) => {
-                        const tableEntries = structureDraftEntries.filter(
-                          (entry) => entry.tableId === table.id,
-                        );
-                        return (
-                          <article
-                            key={table.id}
-                            className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold text-slate-900">{table.title}</p>
-                                <p className="mt-1 text-xs text-slate-500">{table.id}</p>
-                              </div>
-                              <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-600 ring-1 ring-slate-200">
-                                {formatCount(tableEntries.length)} элементов
-                              </span>
-                            </div>
-
-                            <div className="mt-5 space-y-4">
-                              {tableEntries.map((entry, index) => {
-                                const globalIndex = structureDraftEntries.findIndex(
-                                  (candidate) =>
-                                    candidate.targetType === entry.targetType &&
-                                    candidate.tableId === entry.tableId &&
-                                    candidate.rowKey === entry.rowKey &&
-                                    candidate.columnKey === entry.columnKey,
-                                );
-                                const targetLabel =
-                                  entry.targetType === ArchiveStructureOverrideTargetType.TABLE_TITLE
-                                    ? "Заголовок таблицы"
-                                    : entry.targetType === ArchiveStructureOverrideTargetType.ROW_LABEL
-                                      ? "Строка"
-                                      : "Графа";
-
-                                return (
-                                  <div
-                                    key={`${entry.targetType}-${entry.rowKey ?? "table"}-${entry.columnKey ?? "none"}-${index}`}
-                                    className="rounded-2xl border border-slate-200 bg-white p-4"
-                                  >
-                                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-                                      <div className="space-y-2">
-                                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                                          {targetLabel}
-                                        </p>
-                                        <p className="text-sm text-slate-500">
-                                          original: <span className="font-medium text-slate-700">{entry.originalLabel}</span>
-                                        </p>
-                                        <p className="text-xs text-slate-500">
-                                          key: {entry.rowKey ?? entry.columnKey ?? table.id}
-                                        </p>
-                                      </div>
-                                      {entry.overrideId ? (
-                                        <button
-                                          type="submit"
-                                          formAction={resetArchiveStructureOverrideAction}
-                                          name="overrideId"
-                                          value={entry.overrideId}
-                                          className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                                        >
-                                          Сбросить правку
-                                        </button>
-                                      ) : null}
-                                    </div>
-
-                                    {entry.overrideId ? (
-                                      <input
-                                        type="hidden"
-                                        name="returnTo"
-                                        value={buildQaHref({
-                                          year: effectiveYear,
-                                          formCode: effectiveFormCode,
-                                          regionId: effectiveRegionId,
-                                          importFileId: selectedFile.id,
-                                          page: safePage,
-                                          problemOnly,
-                                          loadValues,
-                                        })}
-                                      />
-                                    ) : null}
-
-                                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-                                      <div className="space-y-2">
-                                        <label
-                                          htmlFor={`structure-label-${globalIndex}`}
-                                          className="text-sm font-medium text-slate-700"
-                                        >
-                                          Новое название
-                                        </label>
-                                        <input
-                                          id={`structure-label-${globalIndex}`}
-                                          name={createStructureFieldName(globalIndex, "overrideLabel")}
-                                          defaultValue={entry.currentLabel}
-                                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                                        />
-                                      </div>
-                                      <div className="space-y-2">
-                                        <label
-                                          htmlFor={`structure-note-${globalIndex}`}
-                                          className="text-sm font-medium text-slate-700"
-                                        >
-                                          Комментарий
-                                        </label>
-                                        <input
-                                          id={`structure-note-${globalIndex}`}
-                                          name={createStructureFieldName(globalIndex, "note")}
-                                          defaultValue={entry.note ?? ""}
-                                          placeholder="Почему это название лучше"
-                                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
-                                        />
-                                      </div>
-                                    </div>
-
-                                    <input
-                                      type="hidden"
-                                      name={createStructureFieldName(globalIndex, "targetType")}
-                                      value={entry.targetType}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name={createStructureFieldName(globalIndex, "tableId")}
-                                      value={entry.tableId}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name={createStructureFieldName(globalIndex, "rowKey")}
-                                      value={entry.rowKey ?? ""}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name={createStructureFieldName(globalIndex, "columnKey")}
-                                      value={entry.columnKey ?? ""}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name={createStructureFieldName(globalIndex, "originalLabel")}
-                                      value={entry.originalLabel}
-                                    />
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-
-                    <div className="flex justify-end">
-                      <button
-                        type="submit"
-                        className="rounded-2xl bg-[#1f67ab] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#185993]"
-                      >
-                        Сохранить правки структуры
-                      </button>
-                    </div>
-                  </form>
+                {selectedSubmission && selectedSchema ? (
+                  <ArchiveStructureEditor
+                    schema={parseAndNormalizeFormSchema(selectedSchema)}
+                    entries={structureDraftEntries}
+                    formTypeId={selectedFile.formTypeId ?? ""}
+                    reportingYearId={selectedFile.reportingYearId ?? ""}
+                    returnTo={buildQaHref({
+                      year: effectiveYear,
+                      formCode: effectiveFormCode,
+                      regionId: effectiveRegionId,
+                      importFileId: selectedFile.id,
+                      page: safePage,
+                      problemOnly,
+                      loadValues,
+                    })}
+                    saveAction={saveArchiveStructureOverridesAction}
+                  />
                 ) : (
                   <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
                     Для ручной доводки структуры нужен найденный архивный `Submission`-шаблон выбранной формы.
