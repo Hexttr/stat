@@ -2537,7 +2537,7 @@ export async function saveArchiveStructureOverridesAction(formData: FormData) {
     redirect(
       appendSearchParam(
         returnTo,
-        `error=${encodeURIComponent("Нет данных для сохранения правок структуры.")}`,
+        `structureSaved=${encodeURIComponent(`${formType.code}|${reportingYear.year}|0`)}`,
       ),
     );
   }
@@ -2594,21 +2594,6 @@ export async function saveArchiveStructureOverridesAction(formData: FormData) {
   );
 
   await prisma.$transaction(async (tx) => {
-    const allOverrideKeys = normalizedOverrides.map((override) => ({
-      formTypeId: parsed.data.formTypeId,
-      reportingYearId: parsed.data.reportingYearId,
-      targetType: override.targetType,
-      tableId: override.tableId,
-      rowKey: override.rowKey,
-      columnKey: override.columnKey,
-    }));
-
-    for (const overrideKey of allOverrideKeys) {
-      await tx.archiveStructureOverride.deleteMany({
-        where: overrideKey,
-      });
-    }
-
     for (const override of changedOverrides) {
       await tx.archiveStructureOverride.upsert({
         where: {

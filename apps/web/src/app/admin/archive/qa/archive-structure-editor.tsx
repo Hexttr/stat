@@ -3,13 +3,10 @@
 import { useMemo, useState } from "react";
 
 import { RuntimeFormRenderer } from "@/components/forms/runtime-form-renderer";
-import { FormBuilderSchema } from "@/lib/form-builder/schema";
+import { type FormBuilderSchema } from "@/lib/form-builder/schema";
 import { getInitialRuntimeValues } from "@/lib/form-builder/runtime";
 
-type ArchiveStructureOverrideTargetTypeValue =
-  | "TABLE_TITLE"
-  | "ROW_LABEL"
-  | "COLUMN_LABEL";
+type ArchiveStructureOverrideTargetTypeValue = "TABLE_TITLE" | "ROW_LABEL" | "COLUMN_LABEL";
 
 type StructureEntry = {
   targetType: ArchiveStructureOverrideTargetTypeValue;
@@ -43,7 +40,8 @@ export function ArchiveStructureEditor({
   returnTo,
   saveAction,
 }: Props) {
-  const [draftSchema, setDraftSchema] = useState<FormBuilderSchema>(schema);
+  const [activeTableId, setActiveTableId] = useState(schema.tables[0]?.id ?? null);
+  const [draftLabels, setDraftLabels] = useState<Record<string, string>>({});
   const runtimeValues = useMemo(() => getInitialRuntimeValues(schema), [schema]);
 
   const entryMap = useMemo(
@@ -51,157 +49,182 @@ export function ArchiveStructureEditor({
     [entries],
   );
 
-  const serializedEntries = useMemo(() => {
-    return draftSchema.tables.flatMap((table) => {
-      const tableEntry =
-        entryMap.get(
-          makeEntryKey({
-            targetType: "TABLE_TITLE",
-            tableId: table.id,
-            rowKey: null,
-            columnKey: null,
-          }),
-        ) ?? null;
+  const activeTable = schema.tables.find((table) => table.id === activeTableId) ?? schema.tables[0] ?? null;
 
-      const nextEntries: StructureEntry[] = [
-        {
-          targetType: "TABLE_TITLE",
-          tableId: table.id,
-          rowKey: null,
-          columnKey: null,
-          originalLabel: tableEntry?.originalLabel ?? table.title,
-          currentLabel: table.title,
-          overrideId: tableEntry?.overrideId ?? null,
-          note: tableEntry?.note ?? null,
-        },
-      ];
-
-      for (const row of table.rows) {
-        const rowEntry =
-          entryMap.get(
-            makeEntryKey({
-              targetType: "ROW_LABEL",
-              tableId: table.id,
-              rowKey: row.key,
-              columnKey: null,
-            }),
-          ) ?? null;
-
-        nextEntries.push({
-          targetType: "ROW_LABEL",
-          tableId: table.id,
-          rowKey: row.key,
-          columnKey: null,
-          originalLabel: rowEntry?.originalLabel ?? row.label,
-          currentLabel: row.label,
-          overrideId: rowEntry?.overrideId ?? null,
-          note: rowEntry?.note ?? null,
-        });
-      }
-
-      for (const column of table.descriptorColumns) {
-        const columnEntry =
-          entryMap.get(
-            makeEntryKey({
-              targetType: "COLUMN_LABEL",
-              tableId: table.id,
-              rowKey: null,
-              columnKey: column.key,
-            }),
-          ) ?? null;
-
-        nextEntries.push({
-          targetType: "COLUMN_LABEL",
-          tableId: table.id,
-          rowKey: null,
-          columnKey: column.key,
-          originalLabel: columnEntry?.originalLabel ?? column.label,
-          currentLabel: column.label,
-          overrideId: columnEntry?.overrideId ?? null,
-          note: columnEntry?.note ?? null,
-        });
-      }
-
-      for (const column of table.columns) {
-        const columnEntry =
-          entryMap.get(
-            makeEntryKey({
-              targetType: "COLUMN_LABEL",
-              tableId: table.id,
-              rowKey: null,
-              columnKey: column.key,
-            }),
-          ) ?? null;
-
-        nextEntries.push({
-          targetType: "COLUMN_LABEL",
-          tableId: table.id,
-          rowKey: null,
-          columnKey: column.key,
-          originalLabel: columnEntry?.originalLabel ?? column.label,
-          currentLabel: column.label,
-          overrideId: columnEntry?.overrideId ?? null,
-          note: columnEntry?.note ?? null,
-        });
-      }
-
-      return nextEntries;
+  function getEntry(params: {
+    targetType: StructureEntry["targetType"];
+    tableId: string;
+    rowKey?: string | null;
+    columnKey?: string | null;
+    fallbackLabel: string;
+  }): StructureEntry {
+    const entryKey = makeEntryKey({
+      targetType: params.targetType,
+      tableId: params.tableId,
+      rowKey: params.rowKey ?? null,
+      columnKey: params.columnKey ?? null,
     });
-  }, [draftSchema, entryMap]);
+    const existingEntry = entryMap.get(entryKey) ?? null;
+
+    return {
+      targetType: params.targetType,
+      tableId: params.tableId,
+      rowKey: params.rowKey ?? null,
+      columnKey: params.columnKey ?? null,
+      originalLabel: existingEntry?.originalLabel ?? params.fallbackLabel,
+      currentLabel: draftLabels[entryKey] ?? existingEntry?.currentLabel ?? params.fallbackLabel,
+      overrideId: existingEntry?.overrideId ?? null,
+      note: existingEntry?.note ?? null,
+    };
+  }
+
+  const serializedEntries = useMemo(
+    () =>
+      Object.entries(draftLabels)
+        .map(([entryKey, label]) => {
+          const existingEntry = entryMap.get(entryKey);
+          if (!existingEntry) {
+            return null;
+          }
+
+          const trimmedLabel = label.trim();
+          if (trimmedLabel.length === 0 || trimmedLabel === existingEntry.originalLabel.trim()) {
+            return null;
+          }
+
+          return {
+            ...existingEntry,
+            currentLabel: trimmedLabel,
+          };
+        })
+        .filter((entry): entry is StructureEntry => Boolean(entry)),
+    [draftLabels, entryMap],
+  );
+
+  const activeSchema = useMemo<FormBuilderSchema>(() => {
+    if (!activeTable) {
+      return {
+        ...schema,
+        tables: [],
+      };
+    }
+
+    return {
+      ...schema,
+      tables: [
+        {
+          ...activeTable,
+          title: getEntry({
+            targetType: "TABLE_TITLE",
+            tableId: activeTable.id,
+            fallbackLabel: activeTable.title,
+          }).currentLabel,
+          rows: activeTable.rows.map((row) => ({
+            ...row,
+            label: getEntry({
+              targetType: "ROW_LABEL",
+              tableId: activeTable.id,
+              rowKey: row.key,
+              fallbackLabel: row.label,
+            }).currentLabel,
+          })),
+          descriptorColumns: activeTable.descriptorColumns.map((column) => ({
+            ...column,
+            label: getEntry({
+              targetType: "COLUMN_LABEL",
+              tableId: activeTable.id,
+              columnKey: column.key,
+              fallbackLabel: column.label,
+            }).currentLabel,
+          })),
+          columns: activeTable.columns.map((column) => ({
+            ...column,
+            label: getEntry({
+              targetType: "COLUMN_LABEL",
+              tableId: activeTable.id,
+              columnKey: column.key,
+              fallbackLabel: column.label,
+            }).currentLabel,
+          })),
+        },
+      ],
+    };
+  }, [activeTable, draftLabels, entryMap, schema]);
+
+  function setDraftLabel(params: {
+    targetType: StructureEntry["targetType"];
+    tableId: string;
+    rowKey?: string | null;
+    columnKey?: string | null;
+    label: string;
+  }) {
+    const entryKey = makeEntryKey({
+      targetType: params.targetType,
+      tableId: params.tableId,
+      rowKey: params.rowKey ?? null,
+      columnKey: params.columnKey ?? null,
+    });
+
+    setDraftLabels((currentDrafts) => ({
+      ...currentDrafts,
+      [entryKey]: params.label,
+    }));
+  }
 
   function updateTableTitle(tableId: string, title: string) {
-    setDraftSchema((currentSchema) => ({
-      ...currentSchema,
-      tables: currentSchema.tables.map((table) =>
-        table.id === tableId ? { ...table, title } : table,
-      ),
-    }));
+    setDraftLabel({
+      targetType: "TABLE_TITLE",
+      tableId,
+      label: title,
+    });
   }
 
   function updateRowLabel(tableId: string, rowId: string, label: string) {
-    setDraftSchema((currentSchema) => ({
-      ...currentSchema,
-      tables: currentSchema.tables.map((table) =>
-        table.id !== tableId
-          ? table
-          : {
-              ...table,
-              rows: table.rows.map((row) => (row.id === rowId ? { ...row, label } : row)),
-            },
-      ),
-    }));
+    const row = schema
+      .tables.find((table) => table.id === tableId)
+      ?.rows.find((candidate) => candidate.id === rowId);
+    if (!row) {
+      return;
+    }
+
+    setDraftLabel({
+      targetType: "ROW_LABEL",
+      tableId,
+      rowKey: row.key,
+      label,
+    });
   }
 
   function updateDescriptorColumnLabel(tableId: string, columnId: string, label: string) {
-    setDraftSchema((currentSchema) => ({
-      ...currentSchema,
-      tables: currentSchema.tables.map((table) =>
-        table.id !== tableId
-          ? table
-          : {
-              ...table,
-              descriptorColumns: table.descriptorColumns.map((column) =>
-                column.id === columnId ? { ...column, label } : column,
-              ),
-            },
-      ),
-    }));
+    const column = schema
+      .tables.find((table) => table.id === tableId)
+      ?.descriptorColumns.find((candidate) => candidate.id === columnId);
+    if (!column) {
+      return;
+    }
+
+    setDraftLabel({
+      targetType: "COLUMN_LABEL",
+      tableId,
+      columnKey: column.key,
+      label,
+    });
   }
 
   function updateInputColumnLabel(tableId: string, columnId: string, label: string) {
-    setDraftSchema((currentSchema) => ({
-      ...currentSchema,
-      tables: currentSchema.tables.map((table) =>
-        table.id !== tableId
-          ? table
-          : {
-              ...table,
-              columns: table.columns.map((column) =>
-                column.id === columnId ? { ...column, label } : column,
-              ),
-            },
-      ),
-    }));
+    const column = schema
+      .tables.find((table) => table.id === tableId)
+      ?.columns.find((candidate) => candidate.id === columnId);
+    if (!column) {
+      return;
+    }
+
+    setDraftLabel({
+      targetType: "COLUMN_LABEL",
+      tableId,
+      columnKey: column.key,
+      label,
+    });
   }
 
   return (
@@ -222,22 +245,47 @@ export function ArchiveStructureEditor({
         </div>
       ))}
 
-      <RuntimeFormRenderer
-        schema={draftSchema}
-        values={runtimeValues}
-        readOnly
-        structureEditing={{
-          onUpdateTableTitle: updateTableTitle,
-          onUpdateRowLabel: updateRowLabel,
-          onUpdateDescriptorColumnLabel: updateDescriptorColumnLabel,
-          onUpdateInputColumnLabel: updateInputColumnLabel,
-        }}
-      />
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          {schema.tables.map((table) => (
+            <button
+              key={table.id}
+              type="button"
+              onClick={() => setActiveTableId(table.id)}
+              className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition ${
+                table.id === activeTable?.id
+                  ? "border-[#2e78be] bg-blue-50 text-[#1f67ab]"
+                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              {table.title}
+            </button>
+          ))}
+        </div>
 
-      <div className="flex justify-end">
+        {activeTable ? (
+          <RuntimeFormRenderer
+            schema={activeSchema}
+            values={runtimeValues}
+            readOnly
+            structureEditing={{
+              onUpdateTableTitle: updateTableTitle,
+              onUpdateRowLabel: updateRowLabel,
+              onUpdateDescriptorColumnLabel: updateDescriptorColumnLabel,
+              onUpdateInputColumnLabel: updateInputColumnLabel,
+            }}
+          />
+        ) : null}
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm text-slate-500">
+          К сохранению подготовлено правок: {serializedEntries.length}.
+        </p>
         <button
           type="submit"
-          className="rounded-2xl bg-[#1f67ab] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#185993]"
+          disabled={serializedEntries.length === 0}
+          className="rounded-2xl bg-[#1f67ab] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#185993] disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           Сохранить правки структуры
         </button>
