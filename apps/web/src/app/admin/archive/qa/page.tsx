@@ -1,18 +1,11 @@
 import Link from "next/link";
 
+import { createArchiveQaIssueAction } from "@/app/admin/actions";
 import {
-  createArchiveQaIssueAction,
-  resetArchiveStructureOverrideAction,
-  saveArchiveStructureOverridesAction,
-} from "@/app/admin/actions";
-import { ArchiveStructureEditor } from "@/app/admin/archive/qa/archive-structure-editor";
-import {
-  ArchiveStructureOverrideTargetType,
   ImportFileStatus,
   OrganizationType,
   Prisma,
 } from "@/generated/prisma/client";
-import { parseAndNormalizeFormSchema } from "@/lib/form-builder/schema";
 import { requireSuperadmin } from "@/lib/access";
 import { HANDOFF_BATCH_NAME } from "@/lib/archive/service";
 import { prisma } from "@/lib/prisma";
@@ -385,21 +378,6 @@ export default async function AdminArchiveQaPage({
         limit 20
       `
     : [];
-  const structureOverrides =
-    selectedFile?.formTypeId && selectedFile.reportingYearId
-      ? await prisma.archiveStructureOverride.findMany({
-          where: {
-            formTypeId: selectedFile.formTypeId,
-            reportingYearId: selectedFile.reportingYearId,
-          },
-          orderBy: [
-            { tableId: "asc" },
-            { targetType: "asc" },
-            { rowKey: "asc" },
-            { columnKey: "asc" },
-          ],
-        })
-      : [];
   const selectedSubmission =
     selectedFile?.regionId && selectedFile.reportingYearId && selectedFile.formTypeId
       ? await prisma.submission.findFirst({
@@ -441,80 +419,6 @@ export default async function AdminArchiveQaPage({
           },
         })
       : null;
-  const structureOverrideByTarget = new Map(
-    structureOverrides.map((override) => [
-      `${override.targetType}|${override.tableId}|${override.rowKey ?? ""}|${override.columnKey ?? ""}`,
-      override,
-    ]),
-  );
-  const selectedSchema =
-    selectedSubmission?.assignment.templateVersion.schemaJson ?? null;
-  const selectedStructureTables = selectedSchema
-    ? parseAndNormalizeFormSchema(selectedSchema).tables
-    : [];
-  const structureDraftEntries =
-    selectedFile?.formTypeId && selectedFile.reportingYearId
-      ? selectedStructureTables.flatMap((table) => {
-          const entries: Array<{
-            targetType: ArchiveStructureOverrideTargetType;
-            tableId: string;
-            rowKey: string | null;
-            columnKey: string | null;
-            originalLabel: string;
-            currentLabel: string;
-            overrideId: string | null;
-            note: string | null;
-          }> = [];
-
-          const tableOverride = structureOverrideByTarget.get(
-            `${ArchiveStructureOverrideTargetType.TABLE_TITLE}|${table.id}||`,
-          );
-          entries.push({
-            targetType: ArchiveStructureOverrideTargetType.TABLE_TITLE,
-            tableId: table.id,
-            rowKey: null,
-            columnKey: null,
-            originalLabel: table.title,
-            currentLabel: tableOverride?.overrideLabel ?? table.title,
-            overrideId: tableOverride?.id ?? null,
-            note: tableOverride?.note ?? null,
-          });
-
-          for (const row of table.rows) {
-            const rowOverride = structureOverrideByTarget.get(
-              `${ArchiveStructureOverrideTargetType.ROW_LABEL}|${table.id}|${row.key}|`,
-            );
-            entries.push({
-              targetType: ArchiveStructureOverrideTargetType.ROW_LABEL,
-              tableId: table.id,
-              rowKey: row.key,
-              columnKey: null,
-              originalLabel: row.label,
-              currentLabel: rowOverride?.overrideLabel ?? row.label,
-              overrideId: rowOverride?.id ?? null,
-              note: rowOverride?.note ?? null,
-            });
-          }
-
-          for (const column of table.columns) {
-            const columnOverride = structureOverrideByTarget.get(
-              `${ArchiveStructureOverrideTargetType.COLUMN_LABEL}|${table.id}||${column.key}`,
-            );
-            entries.push({
-              targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
-              tableId: table.id,
-              rowKey: null,
-              columnKey: column.key,
-              originalLabel: column.label,
-              currentLabel: columnOverride?.overrideLabel ?? column.label,
-              overrideId: columnOverride?.id ?? null,
-              note: columnOverride?.note ?? null,
-            });
-          }
-
-          return entries;
-        })
-      : [];
   const selectedRawFieldValues =
     loadValues && selectedFile
       ? await prisma.importFieldValue.findMany({
@@ -1183,52 +1087,6 @@ export default async function AdminArchiveQaPage({
                     </button>
                   </div>
                 </form>
-              </section>
-
-              <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-2xl font-semibold text-slate-950">
-                        Доводка структуры формы
-                      </h3>
-                      <HelpHint
-                        label="Пояснение к доводке структуры"
-                        text="Здесь проверяющий может глобально исправить заголовки таблиц, строки и графы для всей архивной формы за выбранный год. Эти правки применяются ко всем регионам."
-                      />
-                    </div>
-                    <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                      Инструмент нужен для ручной доводки структуры отображения, когда автоматическая
-                      расшифровка оставила подписи вроде «Графа 3» или искаженные названия строк.
-                    </p>
-                  </div>
-                  <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    {selectedFile.formType?.code ?? "Форма"} / {selectedFile.reportingYear?.year ?? "Год"}
-                  </div>
-                </div>
-
-                {selectedSubmission && selectedSchema ? (
-                  <ArchiveStructureEditor
-                    schema={parseAndNormalizeFormSchema(selectedSchema)}
-                    entries={structureDraftEntries}
-                    formTypeId={selectedFile.formTypeId ?? ""}
-                    reportingYearId={selectedFile.reportingYearId ?? ""}
-                    returnTo={buildQaHref({
-                      year: effectiveYear,
-                      formCode: effectiveFormCode,
-                      regionId: effectiveRegionId,
-                      importFileId: selectedFile.id,
-                      page: safePage,
-                      problemOnly,
-                      loadValues,
-                    })}
-                    saveAction={saveArchiveStructureOverridesAction}
-                  />
-                ) : (
-                  <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
-                    Для ручной доводки структуры нужен найденный архивный `Submission`-шаблон выбранной формы.
-                  </div>
-                )}
               </section>
 
               <section className="grid gap-6 xl:grid-cols-2">
