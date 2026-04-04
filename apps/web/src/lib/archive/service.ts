@@ -549,6 +549,16 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
     year: version.reportingYear.year,
   });
   const projectedFields = projectSchemaToFields(normalizedSchema);
+  const existingFields = await prisma.formField.findMany({
+    where: {
+      templateVersionId: version.id,
+    },
+    select: {
+      id: true,
+      key: true,
+    },
+  });
+  const existingFieldIdByKey = new Map(existingFields.map((field) => [field.key, field.id]));
 
   await prisma.$transaction(async (tx) => {
     await tx.formTemplateVersion.update({
@@ -560,21 +570,17 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
       },
     });
 
-    await tx.formField.deleteMany({
-      where: {
-        templateVersionId: version.id,
-      },
-    });
-
-    for (const fieldChunk of chunkArray(projectedFields, 1000)) {
-      if (fieldChunk.length === 0) {
+    for (const field of projectedFields) {
+      const existingFieldId = existingFieldIdByKey.get(field.key);
+      if (!existingFieldId) {
         continue;
       }
 
-      await tx.formField.createMany({
-        data: fieldChunk.map((field) => ({
-          templateVersionId: version.id,
-          key: field.key,
+      await tx.formField.update({
+        where: {
+          id: existingFieldId,
+        },
+        data: {
           label: field.label,
           section: field.section,
           tableId: field.tableId,
@@ -590,7 +596,7 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
           sortOrder: field.sortOrder,
           isRequired: field.isRequired,
           validationJson: field.validationJson ?? undefined,
-        })),
+        },
       });
     }
   });
