@@ -48,20 +48,31 @@ function formatVersionStatus(status: FormTemplateVersionStatus) {
   }
 }
 
-function formatSubmissionStatus(status: SubmissionStatus | null) {
+function formatSubmissionStatus(
+  status: SubmissionStatus | null,
+  organizationType: OrganizationType,
+) {
   switch (status) {
     case SubmissionStatus.DRAFT:
-      return "В работе";
+      return organizationType === OrganizationType.REGION_CENTER
+        ? "Черновик региона"
+        : "Черновик оператора";
     case SubmissionStatus.SUBMITTED:
-      return "Отправлено";
+      return organizationType === OrganizationType.REGION_CENTER
+        ? "Отправлено федерации"
+        : "Отправлено региону";
     case SubmissionStatus.IN_REVIEW:
-      return "На проверке";
+      return organizationType === OrganizationType.REGION_CENTER
+        ? "На федеральной проверке"
+        : "На проверке";
     case SubmissionStatus.CHANGES_REQUESTED:
-      return "Нужны правки";
+      return organizationType === OrganizationType.REGION_CENTER
+        ? "Федеральный запросил правки"
+        : "Нужны правки";
     case SubmissionStatus.APPROVED_BY_REGION:
       return "Принято регионом";
     case SubmissionStatus.APPROVED_BY_SUPERADMIN:
-      return "Принято";
+      return "Принято федерально";
     case SubmissionStatus.REJECTED:
       return "Отклонено";
     default:
@@ -146,6 +157,152 @@ function getRouteGroupMeta(group: RouteGroupKey) {
         description: "Новые и еще не завершенные маршруты по регионам и операторам.",
       };
   }
+}
+
+function getRouteDirectionLabel(organizationType: OrganizationType) {
+  return organizationType === OrganizationType.REGION_CENTER
+    ? "Федеральный центр -> Регион -> Федеральное принятие"
+    : "Оператор -> Регион -> Федеральное принятие";
+}
+
+function getRouteNextStepLabel(params: {
+  organizationType: OrganizationType;
+  status: SubmissionStatus | null;
+  isSuperadmin: boolean;
+}) {
+  if (params.organizationType === OrganizationType.REGION_CENTER) {
+    switch (params.status) {
+      case null:
+        return "Региональный админ должен начать заполнение.";
+      case SubmissionStatus.DRAFT:
+        return params.isSuperadmin
+          ? "Ждет отправки регионом."
+          : "Нужно завершить заполнение и отправить суперадмину.";
+      case SubmissionStatus.SUBMITTED:
+        return "Суперадмин должен начать федеральную проверку.";
+      case SubmissionStatus.IN_REVIEW:
+        return "Идет федеральная проверка.";
+      case SubmissionStatus.CHANGES_REQUESTED:
+        return "Регион должен внести правки и отправить форму заново.";
+      case SubmissionStatus.REJECTED:
+        return "Нужно решить, будет ли регион переподавать форму.";
+      case SubmissionStatus.APPROVED_BY_SUPERADMIN:
+        return "Маршрут завершен.";
+      default:
+        return "Ожидается следующий шаг маршрута.";
+    }
+  }
+
+  switch (params.status) {
+    case null:
+      return "Оператор должен заполнить форму.";
+    case SubmissionStatus.DRAFT:
+      return "Оператор продолжает заполнение.";
+    case SubmissionStatus.SUBMITTED:
+      return params.isSuperadmin
+        ? "Ждет регионального принятия."
+        : "Региональный админ должен начать проверку.";
+    case SubmissionStatus.IN_REVIEW:
+      return params.isSuperadmin
+        ? "Идет федеральная проверка."
+        : "Идет региональная проверка.";
+    case SubmissionStatus.CHANGES_REQUESTED:
+      return params.isSuperadmin
+        ? "Регион должен повторно принять форму после правок."
+        : "Оператор должен исправить форму и отправить ее снова.";
+    case SubmissionStatus.APPROVED_BY_REGION:
+      return "Суперадмин должен выполнить федеральное принятие.";
+    case SubmissionStatus.REJECTED:
+      return params.isSuperadmin
+        ? "Маршрут остановлен до решения региона."
+        : "Маршрут остановлен до повторной отправки.";
+    case SubmissionStatus.APPROVED_BY_SUPERADMIN:
+      return "Маршрут завершен.";
+    default:
+      return "Ожидается следующий шаг маршрута.";
+  }
+}
+
+function getRouteActionMeta(params: {
+  organizationType: OrganizationType;
+  submissionId: string | null;
+  submissionStatus: SubmissionStatus | null;
+  assignmentId: string;
+  isSuperadmin: boolean;
+}) {
+  if (params.organizationType === OrganizationType.REGION_CENTER) {
+    if (params.isSuperadmin) {
+      if (!params.submissionId) {
+        return { href: null, label: "Ждет регион" };
+      }
+
+      if (
+        params.submissionStatus === SubmissionStatus.SUBMITTED ||
+        params.submissionStatus === SubmissionStatus.IN_REVIEW ||
+        params.submissionStatus === SubmissionStatus.CHANGES_REQUESTED ||
+        params.submissionStatus === SubmissionStatus.REJECTED ||
+        params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+      ) {
+        return {
+          href: `/admin/forms/review/${params.submissionId}`,
+          label:
+            params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+              ? "Просмотреть"
+              : "Проверить",
+        };
+      }
+
+      return { href: null, label: "Ждет отправку" };
+    }
+
+    return {
+      href: `/admin/forms/assignments/${params.assignmentId}`,
+      label:
+        params.submissionStatus === SubmissionStatus.SUBMITTED ||
+        params.submissionStatus === SubmissionStatus.IN_REVIEW ||
+        params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+          ? "Просмотреть"
+          : params.submissionStatus === SubmissionStatus.CHANGES_REQUESTED ||
+              params.submissionStatus === SubmissionStatus.REJECTED
+            ? "Исправить"
+            : params.submissionId
+              ? "Продолжить"
+              : "Заполнить",
+    };
+  }
+
+  if (!params.submissionId) {
+    return { href: null, label: "Ждет оператора" };
+  }
+
+  if (params.isSuperadmin) {
+    if (
+      params.submissionStatus === SubmissionStatus.APPROVED_BY_REGION ||
+      params.submissionStatus === SubmissionStatus.IN_REVIEW ||
+      params.submissionStatus === SubmissionStatus.CHANGES_REQUESTED ||
+      params.submissionStatus === SubmissionStatus.REJECTED ||
+      params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+    ) {
+      return {
+        href: `/admin/forms/review/${params.submissionId}`,
+        label:
+          params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+            ? "Просмотреть"
+            : "Проверить",
+      };
+    }
+
+    return { href: null, label: "Ждет регион" };
+  }
+
+  return {
+    href: `/admin/forms/review/${params.submissionId}`,
+    label:
+      params.submissionStatus === SubmissionStatus.APPROVED_BY_REGION ||
+      params.submissionStatus === SubmissionStatus.APPROVED_BY_SUPERADMIN
+        ? "Просмотреть"
+        : "Проверить",
+  };
 }
 
 export default async function AdminFormsPage({
@@ -335,38 +492,29 @@ export default async function AdminFormsPage({
   const routeItems = assignments.map((assignment) => {
     const submission = assignment.submissions[0] ?? null;
     const routeGroup = getRouteGroupKey(submission?.status ?? null, isSuperadmin);
-    const direction =
-      assignment.organization.type === OrganizationType.REGION_CENTER
-        ? "Федеральный центр -> Регион"
-        : "Регион -> Оператор";
-    const actionHref =
-      assignment.organization.type === OrganizationType.REGION_CENTER
-        ? isSuperadmin
-          ? submission
-            ? `/admin/forms/review/${submission.id}`
-            : null
-          : `/admin/forms/assignments/${assignment.id}`
-        : submission
-          ? `/admin/forms/review/${submission.id}`
-          : null;
-    const actionLabel =
-      assignment.organization.type === OrganizationType.REGION_CENTER
-        ? isSuperadmin
-          ? "Проверить"
-          : submission
-            ? "Открыть"
-            : "Заполнить"
-        : "Открыть";
+    const direction = getRouteDirectionLabel(assignment.organization.type);
+    const action = getRouteActionMeta({
+      organizationType: assignment.organization.type,
+      submissionId: submission?.id ?? null,
+      submissionStatus: submission?.status ?? null,
+      assignmentId: assignment.id,
+      isSuperadmin,
+    });
 
     return {
       assignment,
       submission,
       routeGroup,
       direction,
-      actionHref,
-      actionLabel,
+      nextStepLabel: getRouteNextStepLabel({
+        organizationType: assignment.organization.type,
+        status: submission?.status ?? null,
+        isSuperadmin,
+      }),
+      actionHref: action.href,
+      actionLabel: action.label,
       statusLabel: submission
-        ? formatSubmissionStatus(submission.status)
+        ? formatSubmissionStatus(submission.status, assignment.organization.type)
         : formatAssignmentStatus(assignment.status),
     };
   });
@@ -1221,7 +1369,7 @@ export default async function AdminFormsPage({
                 </div>
               ) : (
                 <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                  <div className="grid grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px_120px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <div className="grid grid-cols-[90px_minmax(0,1.5fr)_160px_170px_240px_130px_140px_120px] gap-0 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                     <div className="px-4 py-3">Форма</div>
                     <div className="px-4 py-3">Название</div>
                     <div className="px-4 py-3">Регион</div>
@@ -1233,10 +1381,18 @@ export default async function AdminFormsPage({
                   </div>
                   <div className="divide-y divide-slate-200">
                   {activeRouteGroup.items.map(
-                    ({ assignment, submission, direction, statusLabel, actionHref, actionLabel }) => (
+                    ({
+                      assignment,
+                      submission,
+                      direction,
+                      nextStepLabel,
+                      statusLabel,
+                      actionHref,
+                      actionLabel,
+                    }) => (
                     <div
                       key={assignment.id}
-                      className="grid items-center grid-cols-[90px_minmax(0,1.5fr)_160px_170px_170px_130px_140px_120px] gap-0"
+                      className="grid items-center grid-cols-[90px_minmax(0,1.5fr)_160px_170px_240px_130px_140px_120px] gap-0"
                     >
                       <div className="px-4 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f67ab]">
                         {assignment.templateVersion.template.formType.code}
@@ -1256,7 +1412,10 @@ export default async function AdminFormsPage({
                       <div className="truncate px-4 py-3 text-sm text-slate-700">
                         {assignment.organization.name}
                       </div>
-                      <div className="truncate px-4 py-3 text-sm text-slate-600">{direction}</div>
+                      <div className="px-4 py-3 text-sm text-slate-600">
+                        <p className="truncate">{direction}</p>
+                        <p className="mt-1 text-xs text-slate-500">{nextStepLabel}</p>
+                      </div>
                       <div className="px-4 py-3 text-sm text-slate-600">
                         {assignment.dueDate
                           ? assignment.dueDate.toLocaleDateString("ru-RU")
@@ -1278,7 +1437,7 @@ export default async function AdminFormsPage({
                             {actionLabel}
                           </Link>
                         ) : (
-                          <span className="text-xs text-slate-400">Нет отправки</span>
+                          <span className="text-xs text-slate-400">{actionLabel}</span>
                         )}
                       </div>
                     </div>

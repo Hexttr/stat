@@ -403,15 +403,15 @@ export default async function AdminArchivePage({
         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
-              Handoff archive
+              Сервисный раздел
             </p>
             <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
-              Архив 2019-2024
+              Сервисный раздел импорта
             </h1>
             <p className="mt-3 max-w-4xl text-slate-600">
-              Раздел связывает handoff-базу из `db` с нашей рабочей моделью: канонические
-              регионы, архивный реестр документов, годовые версии форм и пилотные
-              региональные заготовки для последующего заполнения и маппинга значений.
+              Технический экран обслуживания архива: импорт, синхронизация, подготовка версий,
+              извлечение значений и pilot mapping. Основная повседневная работа с архивом теперь
+              ведется на отдельном рабочем экране.
             </p>
           </div>
           <div className="flex flex-col items-start gap-3 xl:items-end">
@@ -425,7 +425,7 @@ export default async function AdminArchivePage({
               href="/admin/archive/qa"
               className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
             >
-              Открыть архивный QA
+              Открыть Архив
             </Link>
           </div>
         </div>

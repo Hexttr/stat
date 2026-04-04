@@ -18,6 +18,9 @@ type Props = {
   saveAction: (formData: FormData) => void | Promise<void>;
   submitAction: (formData: FormData) => void | Promise<void>;
   errorMessage?: string | null;
+  saveButtonLabel?: string;
+  submitButtonLabel?: string;
+  helperNotice?: string | null;
 };
 
 export function OperatorAssignmentForm({
@@ -28,6 +31,9 @@ export function OperatorAssignmentForm({
   saveAction,
   submitAction,
   errorMessage,
+  saveButtonLabel = "Сохранить черновик",
+  submitButtonLabel = "Отправить на проверку",
+  helperNotice,
 }: Props) {
   const submitButtonRef = useRef<HTMLButtonElement | null>(null);
   const [values, setValues] = useState<RuntimeValueMap>(
@@ -76,6 +82,12 @@ export function OperatorAssignmentForm({
         </p>
       ) : null}
 
+      {helperNotice ? (
+        <p className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          {helperNotice}
+        </p>
+      ) : null}
+
       <RuntimeFormRenderer
         schema={schema}
         values={values}
@@ -91,14 +103,14 @@ export function OperatorAssignmentForm({
             formAction={saveAction}
             className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
           >
-            Сохранить черновик
+            {saveButtonLabel}
           </button>
           <button
             type="button"
             onClick={handleSubmitForReview}
             className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
           >
-            Отправить на проверку
+            {submitButtonLabel}
           </button>
           <button ref={submitButtonRef} type="submit" formAction={submitAction} hidden />
         </div>

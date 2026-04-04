@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { RuntimeFormRenderer } from "@/components/forms/runtime-form-renderer";
 import { type FormBuilderSchema } from "@/lib/form-builder/schema";
@@ -51,32 +51,35 @@ export function ArchiveStructureEditor({
 
   const activeTable = schema.tables.find((table) => table.id === activeTableId) ?? schema.tables[0] ?? null;
 
-  function getEntry(params: {
-    targetType: StructureEntry["targetType"];
-    tableId: string;
-    rowKey?: string | null;
-    columnKey?: string | null;
-    fallbackLabel: string;
-  }): StructureEntry {
-    const entryKey = makeEntryKey({
-      targetType: params.targetType,
-      tableId: params.tableId,
-      rowKey: params.rowKey ?? null,
-      columnKey: params.columnKey ?? null,
-    });
-    const existingEntry = entryMap.get(entryKey) ?? null;
+  const getEntry = useCallback(
+    (params: {
+      targetType: StructureEntry["targetType"];
+      tableId: string;
+      rowKey?: string | null;
+      columnKey?: string | null;
+      fallbackLabel: string;
+    }): StructureEntry => {
+      const entryKey = makeEntryKey({
+        targetType: params.targetType,
+        tableId: params.tableId,
+        rowKey: params.rowKey ?? null,
+        columnKey: params.columnKey ?? null,
+      });
+      const existingEntry = entryMap.get(entryKey) ?? null;
 
-    return {
-      targetType: params.targetType,
-      tableId: params.tableId,
-      rowKey: params.rowKey ?? null,
-      columnKey: params.columnKey ?? null,
-      originalLabel: existingEntry?.originalLabel ?? params.fallbackLabel,
-      currentLabel: draftLabels[entryKey] ?? existingEntry?.currentLabel ?? params.fallbackLabel,
-      overrideId: existingEntry?.overrideId ?? null,
-      note: existingEntry?.note ?? null,
-    };
-  }
+      return {
+        targetType: params.targetType,
+        tableId: params.tableId,
+        rowKey: params.rowKey ?? null,
+        columnKey: params.columnKey ?? null,
+        originalLabel: existingEntry?.originalLabel ?? params.fallbackLabel,
+        currentLabel: draftLabels[entryKey] ?? existingEntry?.currentLabel ?? params.fallbackLabel,
+        overrideId: existingEntry?.overrideId ?? null,
+        note: existingEntry?.note ?? null,
+      };
+    },
+    [draftLabels, entryMap],
+  );
 
   const serializedEntries = useMemo(
     () =>
@@ -99,6 +102,21 @@ export function ArchiveStructureEditor({
         })
         .filter((entry): entry is StructureEntry => Boolean(entry)),
     [draftLabels, entryMap],
+  );
+
+  const changedEntryKeys = useMemo(
+    () =>
+      new Set(
+        serializedEntries.map((entry) =>
+          makeEntryKey({
+            targetType: entry.targetType,
+            tableId: entry.tableId,
+            rowKey: entry.rowKey,
+            columnKey: entry.columnKey,
+          }),
+        ),
+      ),
+    [serializedEntries],
   );
 
   const activeSchema = useMemo<FormBuilderSchema>(() => {
@@ -149,7 +167,7 @@ export function ArchiveStructureEditor({
         },
       ],
     };
-  }, [activeTable, draftLabels, entryMap, schema]);
+  }, [activeTable, getEntry, schema]);
 
   function setDraftLabel(params: {
     targetType: StructureEntry["targetType"];
@@ -169,6 +187,24 @@ export function ArchiveStructureEditor({
       ...currentDrafts,
       [entryKey]: params.label,
     }));
+  }
+
+  function resetActiveTableDrafts() {
+    if (!activeTable) {
+      return;
+    }
+
+    setDraftLabels((currentDrafts) =>
+      Object.fromEntries(
+        Object.entries(currentDrafts).filter(([entryKey]) => !entryKey.includes(`|${activeTable.id}|`)),
+      ),
+    );
+  }
+
+  function getChangedInputClassName(isChanged: boolean) {
+    return isChanged
+      ? "border-amber-400 bg-amber-50 text-amber-950 ring-2 ring-amber-200"
+      : undefined;
   }
 
   function updateTableTitle(tableId: string, title: string) {
@@ -246,21 +282,36 @@ export function ArchiveStructureEditor({
       ))}
 
       <div className="space-y-4">
-        <div className="flex flex-wrap gap-2">
-          {schema.tables.map((table) => (
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap gap-2">
+            {schema.tables.map((table) => (
+              <button
+                key={table.id}
+                type="button"
+                onClick={() => setActiveTableId(table.id)}
+                className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition ${
+                  table.id === activeTable?.id
+                    ? "border-[#2e78be] bg-blue-50 text-[#1f67ab]"
+                    : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                }`}
+              >
+                {table.title}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="rounded-full bg-slate-100 px-3 py-2 text-sm text-slate-600">
+              Изменено подписей: {serializedEntries.length}
+            </span>
             <button
-              key={table.id}
               type="button"
-              onClick={() => setActiveTableId(table.id)}
-              className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition ${
-                table.id === activeTable?.id
-                  ? "border-[#2e78be] bg-blue-50 text-[#1f67ab]"
-                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
-              }`}
+              onClick={resetActiveTableDrafts}
+              disabled={!activeTable}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
             >
-              {table.title}
+              Сбросить изменения таблицы
             </button>
-          ))}
+          </div>
         </div>
 
         {activeTable ? (
@@ -270,9 +321,71 @@ export function ArchiveStructureEditor({
             readOnly
             structureEditing={{
               onUpdateTableTitle: updateTableTitle,
+              getTableTitleInputClassName: (tableId) =>
+                getChangedInputClassName(
+                  changedEntryKeys.has(
+                    makeEntryKey({
+                      targetType: "TABLE_TITLE",
+                      tableId,
+                      rowKey: null,
+                      columnKey: null,
+                    }),
+                  ),
+                ),
               onUpdateRowLabel: updateRowLabel,
+              getRowLabelInputClassName: (tableId, rowId) => {
+                const row = schema
+                  .tables.find((table) => table.id === tableId)
+                  ?.rows.find((candidate) => candidate.id === rowId);
+                return getChangedInputClassName(
+                  row
+                    ? changedEntryKeys.has(
+                        makeEntryKey({
+                          targetType: "ROW_LABEL",
+                          tableId,
+                          rowKey: row.key,
+                          columnKey: null,
+                        }),
+                      )
+                    : false,
+                );
+              },
               onUpdateDescriptorColumnLabel: updateDescriptorColumnLabel,
+              getDescriptorColumnInputClassName: (tableId, columnId) => {
+                const column = schema
+                  .tables.find((table) => table.id === tableId)
+                  ?.descriptorColumns.find((candidate) => candidate.id === columnId);
+                return getChangedInputClassName(
+                  column
+                    ? changedEntryKeys.has(
+                        makeEntryKey({
+                          targetType: "COLUMN_LABEL",
+                          tableId,
+                          rowKey: null,
+                          columnKey: column.key,
+                        }),
+                      )
+                    : false,
+                );
+              },
               onUpdateInputColumnLabel: updateInputColumnLabel,
+              getInputColumnInputClassName: (tableId, columnId) => {
+                const column = schema
+                  .tables.find((table) => table.id === tableId)
+                  ?.columns.find((candidate) => candidate.id === columnId);
+                return getChangedInputClassName(
+                  column
+                    ? changedEntryKeys.has(
+                        makeEntryKey({
+                          targetType: "COLUMN_LABEL",
+                          tableId,
+                          rowKey: null,
+                          columnKey: column.key,
+                        }),
+                      )
+                    : false,
+                );
+              },
             }}
           />
         ) : null}

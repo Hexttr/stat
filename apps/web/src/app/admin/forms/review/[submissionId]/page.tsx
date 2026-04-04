@@ -126,21 +126,6 @@ function getAvailableDecisions(params: {
     label: string;
     className: string;
   };
-  const superadminStatuses: SubmissionStatus[] = [
-    SubmissionStatus.APPROVED_BY_REGION,
-    SubmissionStatus.IN_REVIEW,
-    SubmissionStatus.CHANGES_REQUESTED,
-    SubmissionStatus.REJECTED,
-  ];
-  const canSuperadminReview =
-    params.isSuperadmin &&
-    (params.organizationType === OrganizationType.REGION_CENTER ||
-      superadminStatuses.includes(params.status));
-
-  if (params.isSuperadmin && !canSuperadminReview) {
-    return [];
-  }
-
   if (!params.isSuperadmin && params.organizationType !== OrganizationType.MEDICAL_FACILITY) {
     return [];
   }
@@ -151,7 +136,13 @@ function getAvailableDecisions(params: {
 
   const decisionSet: ReviewDecisionButton[] = [];
 
-  if (params.status !== SubmissionStatus.IN_REVIEW) {
+  const canStartReview = params.isSuperadmin
+    ? params.organizationType === OrganizationType.REGION_CENTER
+      ? params.status === SubmissionStatus.SUBMITTED
+      : params.status === SubmissionStatus.APPROVED_BY_REGION
+    : params.status === SubmissionStatus.SUBMITTED;
+
+  if (canStartReview) {
     decisionSet.push({
       decision: "start_review",
       label: "Взять в проверку",
@@ -160,35 +151,118 @@ function getAvailableDecisions(params: {
     });
   }
 
-  decisionSet.push(
-    {
-      decision: "request_changes",
-      label: "Вернуть на доработку",
+  if (params.status === SubmissionStatus.IN_REVIEW) {
+    decisionSet.push(
+      {
+        decision: "request_changes",
+        label: "Вернуть на доработку",
+        className:
+          "rounded-2xl bg-amber-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-amber-600",
+      },
+      {
+        decision: "reject",
+        label: "Отклонить",
+        className:
+          "rounded-2xl bg-rose-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-rose-700",
+      },
+    );
+  }
+
+  const canApproveSuperadmin =
+    params.isSuperadmin &&
+    (params.organizationType === OrganizationType.REGION_CENTER
+      ? params.status === SubmissionStatus.SUBMITTED || params.status === SubmissionStatus.IN_REVIEW
+      : params.status === SubmissionStatus.APPROVED_BY_REGION ||
+          params.status === SubmissionStatus.IN_REVIEW);
+
+  if (canApproveSuperadmin) {
+    decisionSet.push({
+      decision: "approve_superadmin",
+      label: "Принять федерально",
       className:
-        "rounded-2xl bg-amber-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-amber-600",
-    },
-    {
-      decision: "reject",
-      label: "Отклонить",
+        "rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-700",
+    });
+  }
+
+  const canApproveRegion =
+    !params.isSuperadmin &&
+    params.organizationType === OrganizationType.MEDICAL_FACILITY &&
+    (params.status === SubmissionStatus.SUBMITTED || params.status === SubmissionStatus.IN_REVIEW);
+
+  if (canApproveRegion) {
+    decisionSet.push({
+      decision: "approve_region",
+      label: "Принять регионом",
       className:
-        "rounded-2xl bg-rose-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-rose-700",
-    },
-    params.isSuperadmin
-      ? {
-          decision: "approve_superadmin",
-          label: "Принять федерально",
-          className:
-            "rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-700",
-        }
-      : {
-          decision: "approve_region",
-          label: "Принять регионом",
-          className:
-            "rounded-2xl bg-[#1f67ab] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#185993]",
-        },
-  );
+        "rounded-2xl bg-[#1f67ab] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#185993]",
+    });
+  }
 
   return decisionSet;
+}
+
+function getWorkflowLabel(organizationType: OrganizationType) {
+  return organizationType === OrganizationType.REGION_CENTER
+    ? "Федеральный центр -> Регион -> Федеральное принятие"
+    : "Оператор -> Регион -> Федеральное принятие";
+}
+
+function getNextStepLabel(params: {
+  status: SubmissionStatus;
+  organizationType: OrganizationType;
+  isSuperadmin: boolean;
+}) {
+  if (params.status === SubmissionStatus.APPROVED_BY_SUPERADMIN) {
+    return "форма уже финально принята";
+  }
+
+  if (params.organizationType === OrganizationType.REGION_CENTER) {
+    switch (params.status) {
+      case SubmissionStatus.SUBMITTED:
+        return params.isSuperadmin
+          ? "взять форму в федеральную проверку или принять федерально"
+          : "ожидать федеральную проверку";
+      case SubmissionStatus.IN_REVIEW:
+        return params.isSuperadmin
+          ? "завершить федеральную проверку"
+          : "ожидать решения федерального уровня";
+      case SubmissionStatus.CHANGES_REQUESTED:
+        return params.isSuperadmin
+          ? "ожидать исправления региона"
+          : "исправить форму и отправить заново";
+      case SubmissionStatus.REJECTED:
+        return params.isSuperadmin
+          ? "дождаться нового решения по маршруту"
+          : "решить, будет ли форма отправлена заново";
+      default:
+        return "следовать маршруту согласования";
+    }
+  }
+
+  switch (params.status) {
+    case SubmissionStatus.SUBMITTED:
+      return params.isSuperadmin
+        ? "ожидать регионального принятия"
+        : "взять форму в региональную проверку";
+    case SubmissionStatus.IN_REVIEW:
+      return params.isSuperadmin
+        ? "завершить федеральную проверку"
+        : "принять форму регионом или вернуть на доработку";
+    case SubmissionStatus.CHANGES_REQUESTED:
+      return params.isSuperadmin
+        ? "ожидать повторного принятия регионом"
+        : "дождаться исправлений оператора";
+    case SubmissionStatus.APPROVED_BY_REGION:
+      return params.isSuperadmin
+        ? "выполнить федеральное принятие"
+        : "ожидать решения федерального уровня";
+    case SubmissionStatus.REJECTED:
+      return params.isSuperadmin
+        ? "дождаться нового движения по маршруту"
+        : "дождаться повторной отправки или закрытия вопроса";
+    default:
+      return "следовать маршруту согласования";
+  }
 }
 
 export default async function AdminSubmissionReviewPage({
@@ -381,9 +455,13 @@ export default async function AdminSubmissionReviewPage({
     ? "Федеральная проверка"
     : "Проверка региональным администратором";
   const routeLabel =
-    submission.assignment.organization.type === OrganizationType.REGION_CENTER
-      ? "Федеральный центр -> Регион"
-      : "Регион -> Оператор";
+    getWorkflowLabel(submission.assignment.organization.type);
+  const nextStepLabel = getNextStepLabel({
+    status: submission.status,
+    organizationType: submission.assignment.organization.type,
+    isSuperadmin,
+  });
+  const canEditStructure = isSuperadmin;
 
   return (
     <div className="space-y-6">
@@ -405,6 +483,9 @@ export default async function AdminSubmissionReviewPage({
               <span>{submission.assignment.organization.name}</span>
               <span>{routeLabel}</span>
             </div>
+            <p className="mt-3 max-w-3xl text-sm text-slate-600">
+              Следующий шаг по маршруту: {nextStepLabel}.
+            </p>
           </div>
 
           <div className="flex flex-col items-start gap-3 xl:items-end">
@@ -488,10 +569,15 @@ export default async function AdminSubmissionReviewPage({
           <div>
             <h2 className="text-2xl font-semibold text-slate-950">Решение по форме</h2>
             <p className="mt-2 max-w-3xl text-slate-600">
-              Здесь можно зафиксировать статус проверки и оставить комментарий для
-              оператора или следующего уровня согласования.
+              Здесь фиксируется текущий этап маршрута и комментарий для предыдущего или следующего
+              участника согласования.
             </p>
           </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-700">
+          <span className="font-medium text-slate-900">Маршрут:</span> {routeLabel}.{" "}
+          <span className="font-medium text-slate-900">Следующий шаг:</span> {nextStepLabel}.
         </div>
 
         {decisions.length > 0 ? (
@@ -560,6 +646,9 @@ export default async function AdminSubmissionReviewPage({
           structureSaveAction={saveArchiveStructureOverridesAction}
           formTypeId={submission.assignment.templateVersion.template.formType.id}
           reportingYearId={submission.assignment.templateVersion.reportingYear.id}
+          canEditStructure={canEditStructure}
+          workflowLabel={routeLabel}
+          nextStepLabel={nextStepLabel}
           errorMessage={error}
         />
       </section>

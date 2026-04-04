@@ -523,14 +523,14 @@ export default async function AdminArchiveQaPage({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
-              Archive QA
+              Архив
             </p>
             <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
-              Проверка архивного импорта
+              Архив
             </h1>
             <p className="mt-3 max-w-4xl text-slate-600">
-              Экран показывает конкретный архивный файл по региону, его сырой staging-слой,
-              связанную региональную отправку и примеры значений после маппинга.
+              Основной рабочий экран архива: здесь можно открыть конкретный архивный файл,
+              сверить связанные формы по региону и довести данные до утверждения.
             </p>
           </div>
           <div className="flex gap-3">
@@ -538,7 +538,7 @@ export default async function AdminArchiveQaPage({
               href="/admin/archive"
               className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
             >
-              Назад к архиву
+              Сервисный раздел импорта
             </Link>
           </div>
         </div>

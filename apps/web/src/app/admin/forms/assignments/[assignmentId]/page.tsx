@@ -166,12 +166,17 @@ export default async function AdminRegionAssignmentPage({
               {assignment.templateVersion.title}
             </h2>
             <p className="mt-3 max-w-3xl text-slate-600">
-              Региональный ввод: {assignment.region.fullName}
+              Прямой ввод региона: {assignment.region.fullName}
             </p>
           </div>
           <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
             Статус: {formatSubmissionStatus(submission?.status ?? null)}
           </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-4 text-sm text-blue-900">
+          Маршрут: федеральный центр назначает форму региону, региональный админ заполняет ее
+          напрямую на этом экране и после отправки передает форму на федеральную проверку.
         </div>
 
         {saved ? (
@@ -201,6 +206,13 @@ export default async function AdminRegionAssignmentPage({
         submitAction={submitRegionSubmissionAction}
         readOnly={readOnly}
         errorMessage={error}
+        saveButtonLabel="Сохранить черновик региона"
+        submitButtonLabel="Отправить в федеральный центр"
+        helperNotice={
+          readOnly
+            ? "Форма уже отправлена на федеральную проверку или принята. На этом этапе можно только просматривать данные."
+            : "Сначала сохраните черновик, если хотите вернуться позже. После отправки форма перейдет на федеральную проверку."
+        }
       />
     </div>
   );

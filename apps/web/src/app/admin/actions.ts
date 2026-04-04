@@ -807,15 +807,27 @@ async function getScopedSubmissionForReview(submissionId: string) {
     redirect("/admin/forms?error=Региональный администратор может проверять только формы операторов.");
   }
 
-  if (
-    scope.isSuperadmin &&
-    submission.assignment.organization.type !== OrganizationType.REGION_CENTER &&
-    submission.status !== SubmissionStatus.APPROVED_BY_REGION &&
-    submission.status !== SubmissionStatus.IN_REVIEW &&
-    submission.status !== SubmissionStatus.CHANGES_REQUESTED &&
-    submission.status !== SubmissionStatus.REJECTED
-  ) {
-    redirect("/admin/forms?error=Эта отправка пока недоступна для проверки на федеральном уровне.");
+  if (scope.isSuperadmin) {
+    const reviewableStatuses: SubmissionStatus[] =
+      submission.assignment.organization.type === OrganizationType.REGION_CENTER
+        ? [
+            SubmissionStatus.SUBMITTED,
+            SubmissionStatus.IN_REVIEW,
+            SubmissionStatus.CHANGES_REQUESTED,
+            SubmissionStatus.REJECTED,
+            SubmissionStatus.APPROVED_BY_SUPERADMIN,
+          ]
+        : [
+            SubmissionStatus.APPROVED_BY_REGION,
+            SubmissionStatus.IN_REVIEW,
+            SubmissionStatus.CHANGES_REQUESTED,
+            SubmissionStatus.REJECTED,
+            SubmissionStatus.APPROVED_BY_SUPERADMIN,
+          ];
+
+    if (!reviewableStatuses.includes(submission.status)) {
+      redirect("/admin/forms?error=Эта отправка пока недоступна для проверки на федеральном уровне.");
+    }
   }
 
   return { currentUser, scope, submission };
@@ -2766,6 +2778,7 @@ export async function reviewSubmissionAction(formData: FormData) {
     parsed.data.submissionId,
   );
   const isSuperadmin = scope.isSuperadmin;
+  const organizationType = submission.assignment.organization.type;
   const nextStatusByDecision: Record<
     z.infer<typeof reviewSubmissionSchema>["decision"],
     SubmissionStatus
@@ -2793,6 +2806,69 @@ export async function reviewSubmissionAction(formData: FormData) {
         `error=${encodeURIComponent("Региональный администратор не может выполнить федеральное согласование.")}`,
       ),
     );
+  }
+
+  if (
+    parsed.data.decision === "approve_region" &&
+    organizationType !== OrganizationType.MEDICAL_FACILITY
+  ) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Региональное принятие доступно только для форм операторов.")}`,
+      ),
+    );
+  }
+
+  if (parsed.data.decision === "start_review") {
+    const canStartReview = isSuperadmin
+      ? organizationType === OrganizationType.REGION_CENTER
+        ? submission.status === SubmissionStatus.SUBMITTED
+        : submission.status === SubmissionStatus.APPROVED_BY_REGION
+      : submission.status === SubmissionStatus.SUBMITTED;
+
+    if (!canStartReview) {
+      redirect(
+        appendSearchParam(
+          returnTo,
+          `error=${encodeURIComponent("Форму можно взять в проверку только на следующем этапе маршрута.")}`,
+        ),
+      );
+    }
+  }
+
+  if (
+    (parsed.data.decision === "request_changes" || parsed.data.decision === "reject") &&
+    submission.status !== SubmissionStatus.IN_REVIEW
+  ) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Сначала переведите форму в статус «На проверке».")}`,
+      ),
+    );
+  }
+
+  if (parsed.data.decision === "approve_superadmin") {
+    const canApproveFederally =
+      organizationType === OrganizationType.REGION_CENTER
+        ? submission.status === SubmissionStatus.SUBMITTED ||
+          submission.status === SubmissionStatus.IN_REVIEW
+        : submission.status === SubmissionStatus.APPROVED_BY_REGION ||
+          submission.status === SubmissionStatus.IN_REVIEW;
+
+    if (!canApproveFederally) {
+      redirect(
+        appendSearchParam(
+          returnTo,
+          `error=${encodeURIComponent(
+            organizationType === OrganizationType.REGION_CENTER
+              ? "Региональная форма может быть принята федерально только после отправки регионом."
+              : "Форма оператора может быть принята федерально только после регионального принятия.",
+          )}`,
+        ),
+      );
+    }
   }
 
   if (

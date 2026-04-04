@@ -27,7 +27,9 @@ type Props = {
   errors?: Record<string, string>;
   structureEditing?: {
     onUpdateTableTitle?: (tableId: string, title: string) => void;
+    getTableTitleInputClassName?: (tableId: string) => string | undefined;
     onUpdateRowLabel: (tableId: string, rowId: string, label: string) => void;
+    getRowLabelInputClassName?: (tableId: string, rowId: string) => string | undefined;
     onInsertRow?: (
       tableId: string,
       anchorRowId: string,
@@ -39,6 +41,7 @@ type Props = {
       columnId: string,
       label: string,
     ) => void;
+    getDescriptorColumnInputClassName?: (tableId: string, columnId: string) => string | undefined;
     onInsertDescriptorColumn?: (
       tableId: string,
       anchorColumnId: string,
@@ -50,6 +53,7 @@ type Props = {
       columnId: string,
       label: string,
     ) => void;
+    getInputColumnInputClassName?: (tableId: string, columnId: string) => string | undefined;
     onInsertInputColumn?: (
       tableId: string,
       anchorColumnId: string,
@@ -441,6 +445,7 @@ const RuntimeTableRow = memo(function RuntimeTableRow({
                 className={clsx(
                   "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900",
                   getRowLabelCellClass(row),
+                  structureEditing?.getRowLabelInputClassName?.(tableId, row.id),
                 )}
                 style={{ paddingLeft: `${12 + row.indent * 20}px` }}
               />
@@ -662,7 +667,10 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
           <input
             value={table.title}
             onChange={(event) => structureEditing.onUpdateTableTitle?.(table.id, event.target.value)}
-            className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-lg font-semibold text-slate-950"
+            className={clsx(
+              "w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-lg font-semibold text-slate-950",
+              structureEditing.getTableTitleInputClassName?.(table.id),
+            )}
           />
         ) : (
           <h3 className="text-lg font-semibold text-slate-950">{table.title}</h3>
@@ -698,7 +706,10 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
                             event.target.value,
                           )
                         }
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                        className={clsx(
+                          "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900",
+                          structureEditing?.getDescriptorColumnInputClassName?.(table.id, column.id),
+                        )}
                       />
                     ) : (
                       <p>{column.label}</p>
@@ -768,7 +779,10 @@ const RuntimeTableSection = memo(function RuntimeTableSection({
                             event.target.value,
                           )
                         }
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                        className={clsx(
+                          "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900",
+                          structureEditing?.getInputColumnInputClassName?.(table.id, column.id),
+                        )}
                       />
                     ) : (
                       <p>{column.label}</p>
