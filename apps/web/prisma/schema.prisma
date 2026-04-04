@@ -91,6 +91,20 @@ enum ArchiveStructureOverrideTargetType {
   COLUMN_LABEL
 }
 
+enum DashboardMetricTrend {
+  HIGHER_IS_BETTER
+  LOWER_IS_BETTER
+  NEUTRAL
+}
+
+enum DashboardPeriodAggregation {
+  SUM
+}
+
+enum DashboardFilterControlType {
+  SINGLE_SELECT
+}
+
 model User {
   id            String           @id @default(cuid())
   email         String           @unique
@@ -180,6 +194,8 @@ model FormType {
   templates      FormTemplate[]
   importFiles    ImportFile[]
   archiveStructureOverrides ArchiveStructureOverride[]
+  dashboardMetrics MetricDefinition[]
+  dashboardFilters DashboardFilterDefinition[]
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
 }
@@ -335,13 +351,27 @@ model IndicatorFieldMapping {
 model MetricDefinition {
   id                String                 @id @default(cuid())
   code              String                 @unique
+  formTypeId        String
+  sourceFieldKey    String
   name              String
   description       String?
+  unit              String?
+  isDashboardEnabled Boolean               @default(false)
+  sortOrder         Int                    @default(0)
+  trendDirection    DashboardMetricTrend   @default(NEUTRAL)
+  periodAggregation DashboardPeriodAggregation @default(SUM)
+  normalThreshold   Decimal?               @db.Decimal(18, 4)
+  goodThreshold     Decimal?               @db.Decimal(18, 4)
+  formType          FormType               @relation(fields: [formTypeId], references: [id], onDelete: Cascade)
   formulas          MetricFormulaVersion[]
   components        MetricComponent[]
   aggregatedMetrics AggregatedMetric[]
+  dashboardFilterOptions DashboardMetricFilterOption[]
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
+
+  @@index([formTypeId, isDashboardEnabled, sortOrder])
+  @@index([formTypeId, sourceFieldKey])
 }
 
 model MetricFormulaVersion {
@@ -387,6 +417,53 @@ model AggregatedMetric {
   updatedAt         DateTime             @updatedAt
 
   @@unique([reportingYearId, regionId, metricId, indicatorId])
+  @@index([metricId, reportingYearId, regionId])
+}
+
+model DashboardFilterDefinition {
+  id                String                     @id @default(cuid())
+  formTypeId        String
+  code              String
+  label             String
+  controlType       DashboardFilterControlType @default(SINGLE_SELECT)
+  sortOrder         Int                        @default(0)
+  isActive          Boolean                    @default(true)
+  formType          FormType                   @relation(fields: [formTypeId], references: [id], onDelete: Cascade)
+  options           DashboardFilterOption[]
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  @@unique([formTypeId, code])
+  @@index([formTypeId, isActive, sortOrder])
+}
+
+model DashboardFilterOption {
+  id                String                      @id @default(cuid())
+  filterDefinitionId String
+  value             String
+  label             String
+  sortOrder         Int                         @default(0)
+  isDefault         Boolean                     @default(false)
+  filterDefinition  DashboardFilterDefinition   @relation(fields: [filterDefinitionId], references: [id], onDelete: Cascade)
+  metricLinks       DashboardMetricFilterOption[]
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  @@unique([filterDefinitionId, value])
+  @@index([filterDefinitionId, sortOrder])
+}
+
+model DashboardMetricFilterOption {
+  id              String                @id @default(cuid())
+  metricId        String
+  filterOptionId  String
+  metric          MetricDefinition      @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  filterOption    DashboardFilterOption @relation(fields: [filterOptionId], references: [id], onDelete: Cascade)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  @@unique([metricId, filterOptionId])
+  @@index([filterOptionId, metricId])
 }
 
 model ImportBatch {

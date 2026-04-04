@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
+import { cache } from "react";
 
 import { auth } from "@/auth";
 import { RoleType } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
-export async function getCurrentUser() {
+export const getCurrentUser = cache(async () => {
   const session = await auth();
 
   if (!session?.user?.id) {
@@ -25,7 +26,7 @@ export async function getCurrentUser() {
       },
     },
   });
-}
+});
 
 export async function requireAuthenticatedUser() {
   const user = await getCurrentUser();

@@ -10,6 +10,7 @@ import {
   ArchiveQaIssueStatus,
   ArchiveQaIssueType,
   ArchiveStructureOverrideTargetType,
+  DashboardMetricTrend,
   FormAssignmentStatus,
   FormTemplateVersionStatus,
   OrganizationType,
@@ -39,6 +40,10 @@ import {
   importCanonicalDocxValuesToStaging,
 } from "@/lib/archive/docx-service";
 import { ARCHIVE_DASHBOARD_CACHE_TAG } from "@/lib/archive/admin-dashboard";
+import {
+  rebuildAggregatedMetricsForDashboard,
+  STATS_DASHBOARD_CACHE_TAG,
+} from "@/lib/stats-dashboard";
 import {
   normalizeRuntimeValue,
   RuntimeValueMap,
@@ -255,6 +260,45 @@ const credentialBatchSchema = z.object({
   title: z.string().trim().optional(),
 });
 
+const createDashboardMetricSchema = z.object({
+  formTypeId: z.string().min(1, "Выберите форму."),
+  sourceFieldKey: z.string().trim().min(1, "Выберите поле формы."),
+  name: z.string().trim().min(3, "Укажите название метрики."),
+  description: z.string().trim().optional(),
+  unit: z.string().trim().optional(),
+  trendDirection: z.enum([
+    DashboardMetricTrend.HIGHER_IS_BETTER,
+    DashboardMetricTrend.LOWER_IS_BETTER,
+    DashboardMetricTrend.NEUTRAL,
+  ]),
+  normalThreshold: z.string().trim().optional(),
+  goodThreshold: z.string().trim().optional(),
+});
+
+const updateDashboardMetricSchema = createDashboardMetricSchema.extend({
+  metricId: z.string().min(1, "Не найдена метрика."),
+  isDashboardEnabled: z.boolean().optional(),
+});
+
+const createDashboardFilterDefinitionSchema = z.object({
+  formTypeId: z.string().min(1, "Выберите форму."),
+  code: z.string().trim().min(1, "Укажите код фильтра."),
+  label: z.string().trim().min(2, "Укажите название фильтра."),
+});
+
+const createDashboardFilterOptionSchema = z.object({
+  filterDefinitionId: z.string().min(1, "Выберите фильтр."),
+  value: z.string().trim().min(1, "Укажите значение опции."),
+  label: z.string().trim().min(1, "Укажите подпись опции."),
+  isDefault: z.boolean().optional(),
+});
+
+const saveDashboardMetricFiltersSchema = z.object({
+  metricId: z.string().min(1, "Не найдена метрика."),
+});
+
+const installDashboardMetricPresetsSchema = z.object({});
+
 function appendSearchParam(url: string, param: string) {
   const [base, hash] = url.split("#");
   const separator = base.includes("?") ? "&" : "?";
@@ -264,6 +308,78 @@ function appendSearchParam(url: string, param: string) {
 function revalidateArchiveAdminViews() {
   revalidatePath("/admin/archive");
   revalidateTag(ARCHIVE_DASHBOARD_CACHE_TAG, "max");
+}
+
+function revalidateStatsDashboardViews() {
+  revalidatePath("/admin");
+  revalidateTag(STATS_DASHBOARD_CACHE_TAG, "max");
+}
+
+function normalizeDashboardCode(value: string) {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+async function ensureUniqueDashboardMetricCode(baseValue: string, excludeMetricId?: string) {
+  const normalizedBase = normalizeDashboardCode(baseValue) || "DASHBOARD_METRIC";
+  let candidate = normalizedBase;
+  let suffix = 2;
+
+  while (true) {
+    const existingMetric = await prisma.metricDefinition.findFirst({
+      where: {
+        code: candidate,
+        ...(excludeMetricId
+          ? {
+              NOT: {
+                id: excludeMetricId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingMetric) {
+      return candidate;
+    }
+
+    candidate = `${normalizedBase}_${suffix}`;
+    suffix += 1;
+  }
+}
+
+async function ensureUniqueDashboardFilterCode(params: {
+  formTypeId: string;
+  baseValue: string;
+}) {
+  const normalizedBase = normalizeDashboardCode(params.baseValue) || "FILTER";
+  let candidate = normalizedBase;
+  let suffix = 2;
+
+  while (true) {
+    const existingFilter = await prisma.dashboardFilterDefinition.findFirst({
+      where: {
+        formTypeId: params.formTypeId,
+        code: candidate,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingFilter) {
+      return candidate;
+    }
+
+    candidate = `${normalizedBase}_${suffix}`;
+    suffix += 1;
+  }
 }
 
 function getSafeArchiveReturnTo(rawValue: FormDataEntryValue | null) {
@@ -2372,6 +2488,498 @@ export async function applyArchivePilotMappingAction(formData: FormData) {
         : "Не удалось применить pilot mapping к региональным черновикам.";
     redirect(`/admin/archive?error=${encodeURIComponent(message)}`);
   }
+}
+
+export async function createDashboardMetricAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = createDashboardMetricSchema.safeParse({
+    formTypeId: formData.get("formTypeId"),
+    sourceFieldKey: formData.get("sourceFieldKey"),
+    name: formData.get("name"),
+    description: formData.get("description"),
+    unit: formData.get("unit"),
+    trendDirection: formData.get("trendDirection"),
+    normalThreshold: formData.get("normalThreshold"),
+    goodThreshold: formData.get("goodThreshold"),
+  });
+
+  if (!parsed.success) {
+    redirect(`/admin?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Не удалось создать метрику.")}`);
+  }
+
+  const field = await prisma.formField.findFirst({
+    where: {
+      key: parsed.data.sourceFieldKey,
+      templateVersion: {
+        template: {
+          formTypeId: parsed.data.formTypeId,
+        },
+      },
+    },
+    select: {
+      id: true,
+      label: true,
+      templateVersion: {
+        select: {
+          template: {
+            select: {
+              formType: {
+                select: {
+                  code: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!field) {
+    redirect(`/admin?error=${encodeURIComponent("Не удалось найти выбранное поле формы.")}`);
+  }
+
+  const code = await ensureUniqueDashboardMetricCode(
+    `${field.templateVersion.template.formType.code}_${parsed.data.sourceFieldKey}`,
+  );
+
+  await prisma.metricDefinition.create({
+    data: {
+      code,
+      formTypeId: parsed.data.formTypeId,
+      sourceFieldKey: parsed.data.sourceFieldKey,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+      unit: parsed.data.unit || null,
+      isDashboardEnabled: true,
+      trendDirection: parsed.data.trendDirection,
+      normalThreshold: parsed.data.normalThreshold ? Number(parsed.data.normalThreshold) : null,
+      goodThreshold: parsed.data.goodThreshold ? Number(parsed.data.goodThreshold) : null,
+    },
+  });
+
+  await rebuildAggregatedMetricsForDashboard();
+  revalidateStatsDashboardViews();
+  redirect(`/admin?statsMetricCreated=${encodeURIComponent(parsed.data.name)}`);
+}
+
+export async function updateDashboardMetricAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = updateDashboardMetricSchema.safeParse({
+    metricId: formData.get("metricId"),
+    formTypeId: formData.get("formTypeId"),
+    sourceFieldKey: formData.get("sourceFieldKey"),
+    name: formData.get("name"),
+    description: formData.get("description"),
+    unit: formData.get("unit"),
+    trendDirection: formData.get("trendDirection"),
+    normalThreshold: formData.get("normalThreshold"),
+    goodThreshold: formData.get("goodThreshold"),
+    isDashboardEnabled: Boolean(formData.get("isDashboardEnabled")),
+  });
+
+  if (!parsed.success) {
+    redirect(`/admin?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Не удалось обновить метрику.")}`);
+  }
+
+  const metric = await prisma.metricDefinition.findUnique({
+    where: { id: parsed.data.metricId },
+    select: { id: true, code: true },
+  });
+
+  if (!metric) {
+    redirect(`/admin?error=${encodeURIComponent("Метрика не найдена.")}`);
+  }
+
+  await prisma.metricDefinition.update({
+    where: { id: parsed.data.metricId },
+    data: {
+      formTypeId: parsed.data.formTypeId,
+      sourceFieldKey: parsed.data.sourceFieldKey,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+      unit: parsed.data.unit || null,
+      isDashboardEnabled: parsed.data.isDashboardEnabled ?? false,
+      trendDirection: parsed.data.trendDirection,
+      normalThreshold: parsed.data.normalThreshold ? Number(parsed.data.normalThreshold) : null,
+      goodThreshold: parsed.data.goodThreshold ? Number(parsed.data.goodThreshold) : null,
+    },
+  });
+
+  await rebuildAggregatedMetricsForDashboard();
+  revalidateStatsDashboardViews();
+  redirect(`/admin?statsMetricUpdated=${encodeURIComponent(parsed.data.name)}`);
+}
+
+export async function createDashboardFilterDefinitionAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = createDashboardFilterDefinitionSchema.safeParse({
+    formTypeId: formData.get("formTypeId"),
+    code: formData.get("code"),
+    label: formData.get("label"),
+  });
+
+  if (!parsed.success) {
+    redirect(`/admin?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Не удалось создать фильтр.")}`);
+  }
+
+  const code = await ensureUniqueDashboardFilterCode({
+    formTypeId: parsed.data.formTypeId,
+    baseValue: parsed.data.code,
+  });
+
+  await prisma.dashboardFilterDefinition.create({
+    data: {
+      formTypeId: parsed.data.formTypeId,
+      code,
+      label: parsed.data.label,
+    },
+  });
+
+  revalidateStatsDashboardViews();
+  redirect(`/admin?statsFilterCreated=${encodeURIComponent(parsed.data.label)}`);
+}
+
+export async function createDashboardFilterOptionAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = createDashboardFilterOptionSchema.safeParse({
+    filterDefinitionId: formData.get("filterDefinitionId"),
+    value: formData.get("value"),
+    label: formData.get("label"),
+    isDefault: Boolean(formData.get("isDefault")),
+  });
+
+  if (!parsed.success) {
+    redirect(`/admin?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Не удалось создать опцию фильтра.")}`);
+  }
+
+  await prisma.dashboardFilterOption.create({
+    data: {
+      filterDefinitionId: parsed.data.filterDefinitionId,
+      value: parsed.data.value,
+      label: parsed.data.label,
+      isDefault: parsed.data.isDefault ?? false,
+    },
+  });
+
+  revalidateStatsDashboardViews();
+  redirect(`/admin?statsFilterOptionCreated=${encodeURIComponent(parsed.data.label)}`);
+}
+
+export async function saveDashboardMetricFiltersAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = saveDashboardMetricFiltersSchema.safeParse({
+    metricId: formData.get("metricId"),
+  });
+
+  if (!parsed.success) {
+    redirect(`/admin?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Не удалось сохранить фильтры метрики.")}`);
+  }
+
+  const metric = await prisma.metricDefinition.findUnique({
+    where: { id: parsed.data.metricId },
+    select: {
+      id: true,
+      formTypeId: true,
+      name: true,
+    },
+  });
+
+  if (!metric) {
+    redirect(`/admin?error=${encodeURIComponent("Метрика не найдена.")}`);
+  }
+
+  const requestedOptionIds = formData
+    .getAll("filterOptionIds")
+    .map((value) => String(value))
+    .filter(Boolean);
+
+  const availableOptions = await prisma.dashboardFilterOption.findMany({
+    where: {
+      id: {
+        in: requestedOptionIds,
+      },
+      filterDefinition: {
+        formTypeId: metric.formTypeId,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.dashboardMetricFilterOption.deleteMany({
+      where: {
+        metricId: metric.id,
+      },
+    });
+
+    if (availableOptions.length > 0) {
+      await tx.dashboardMetricFilterOption.createMany({
+        data: availableOptions.map((option) => ({
+          metricId: metric.id,
+          filterOptionId: option.id,
+        })),
+      });
+    }
+  });
+
+  revalidateStatsDashboardViews();
+  redirect(`/admin?statsMetricFiltersSaved=${encodeURIComponent(metric.name)}`);
+}
+
+export async function rebuildDashboardStatsAction() {
+  await requireSuperadmin();
+
+  const result = await rebuildAggregatedMetricsForDashboard();
+
+  revalidateStatsDashboardViews();
+  redirect(
+    `/admin?statsRebuilt=${encodeURIComponent(`${result.metricsProcessed}|${result.valuesWritten}`)}`,
+  );
+}
+
+export async function installDashboardMetricPresetsAction() {
+  await requireSuperadmin();
+  installDashboardMetricPresetsSchema.parse({});
+
+  const presetDefinitions = [
+    {
+      code: "F12_PEDIATRIC_SURGERY_BEDS",
+      formCode: "F12",
+      sourceFieldKey: "table_aux_1001__archive_1001_row_1__value_1_1001",
+      name: "Зарегистрированные пациенты",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Число физических лиц зарегистрированных пациентов по форме F12.",
+      normalThreshold: "135000",
+      goodThreshold: "260000",
+    },
+    {
+      code: "F12_PEDIATRIC_PATIENTS",
+      formCode: "F12",
+      sourceFieldKey: "table_aux_1001__archive_1001_row_1__value_3_1001",
+      name: "Пациенты под диспансерным наблюдением",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Состоит под диспансерным наблюдением на конец отчетного года по форме F12.",
+      normalThreshold: "32000",
+      goodThreshold: "67500",
+    },
+    {
+      code: "F12_SURGEON_STAFF",
+      formCode: "F12",
+      sourceFieldKey: "table_aux_1001__archive_1001_row_1__value_4_1001",
+      name: "Впервые выявленные пациенты",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Впервые выявленные пациенты, подлежавшие диспансерному наблюдению, по форме F12.",
+      normalThreshold: "4300",
+      goodThreshold: "9700",
+    },
+    {
+      code: "F14_EVENT_COUNT",
+      formCode: "F14",
+      sourceFieldKey: "table_f14_2700__archive_f14_2700_row_1__value_1_2700",
+      name: "Самостоятельные обращения",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Самостоятельно обратившиеся за медицинской помощью в стационарных условиях по форме F14.",
+      normalThreshold: "7200",
+      goodThreshold: "22100",
+    },
+    {
+      code: "F14_PARTICIPANT_COUNT",
+      formCode: "F14",
+      sourceFieldKey: "table_f14_2900__archive_f14_2900_row_1__value_1_2900",
+      name: "Перелом шейки бедра",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.LOWER_IS_BETTER,
+      description: "Пациенты старше трудоспособного возраста с переломом шейки бедра по форме F14.",
+      normalThreshold: "650",
+      goodThreshold: "250",
+    },
+    {
+      code: "F14_PROGRAM_HOURS",
+      formCode: "F14",
+      sourceFieldKey: "table_f14_2200__archive_f14_2200_row_1__value_4_2200",
+      name: "Направлено в дневной стационар",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Направленные в условия дневного стационара по форме F14.",
+      normalThreshold: "3",
+      goodThreshold: "9",
+    },
+    {
+      code: "F19_OPERATIONS_TOTAL",
+      formCode: "F19",
+      sourceFieldKey: "table_f19_1000__archive_f19_1000_row_10__value_1_1000",
+      name: "Женщины, графа 4",
+      unit: "ед.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F19: женщины, графа 4.",
+      normalThreshold: "1500",
+      goodThreshold: "2650",
+    },
+    {
+      code: "F19_COMPLICATIONS_TOTAL",
+      formCode: "F19",
+      sourceFieldKey: "table_f19_1000__archive_f19_1000_row_10__value_2_1000",
+      name: "Женщины, графа 5",
+      unit: "ед.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F19: женщины, графа 5.",
+      normalThreshold: "155",
+      goodThreshold: "300",
+    },
+    {
+      code: "F19_POSTOPERATIVE_BEDS",
+      formCode: "F19",
+      sourceFieldKey: "table_f19_1000__archive_f19_1000_row_10__value_3_1000",
+      name: "Женщины, графа 6",
+      unit: "ед.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F19: женщины, графа 6.",
+      normalThreshold: "15",
+      goodThreshold: "40",
+    },
+    {
+      code: "F30_MEDICAL_UNITS",
+      formCode: "F30",
+      sourceFieldKey: "table_f30_2201__archive_f30_2201_row_1__value_1_2201",
+      name: "Медицинская эвакуация",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Лица, которым оказана скорая помощь с медицинской эвакуацией, по форме F30.",
+      normalThreshold: "16000",
+      goodThreshold: "28000",
+    },
+    {
+      code: "F30_SPECIALISTS_TOTAL",
+      formCode: "F30",
+      sourceFieldKey: "table_f30_7002__archive_f30_7002_row_1__value_1_7002",
+      name: "Медработники в МИС",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Число медицинских работников, работающих в медицинской информационной системе.",
+      normalThreshold: "2360",
+      goodThreshold: "5225",
+    },
+    {
+      code: "F30_EQUIPMENT_UNITS",
+      formCode: "F30",
+      sourceFieldKey: "table_f30_1051__archive_f30_1051_row_1__value_1_1051",
+      name: "Женщины, прикрепленные к консультациям",
+      unit: "чел.",
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Число женщин, прикрепленных к женским консультациям в сельской местности и малых городах.",
+      normalThreshold: "64000",
+      goodThreshold: "141500",
+    },
+    {
+      code: "F47_INDICATOR_1",
+      formCode: "F47",
+      sourceFieldKey: "table_f47_1700__archive_f47_1700_row_103__value_1_1700",
+      name: "Строка 103, показатель 40,25",
+      unit: null,
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F47 по заполненным данным.",
+      normalThreshold: "0.1",
+      goodThreshold: "1",
+    },
+    {
+      code: "F47_INDICATOR_2",
+      formCode: "F47",
+      sourceFieldKey: "table_f47_1700__archive_f47_1700_row_103__value_2_1700",
+      name: "Строка 103, показатель 38,75",
+      unit: null,
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F47 по заполненным данным.",
+      normalThreshold: "0.1",
+      goodThreshold: "1",
+    },
+    {
+      code: "F47_INDICATOR_3",
+      formCode: "F47",
+      sourceFieldKey: "table_f47_1700__archive_f47_1700_row_103__value_7_1700",
+      name: "Строка 103, показатель 204,25",
+      unit: null,
+      trendDirection: DashboardMetricTrend.HIGHER_IS_BETTER,
+      description: "Архивный показатель F47 по заполненным данным.",
+      normalThreshold: "30",
+      goodThreshold: "48",
+    },
+  ] as const;
+
+  const formTypes = await prisma.formType.findMany({
+    where: {
+      code: {
+        in: [...new Set(presetDefinitions.map((preset) => preset.formCode))],
+      },
+    },
+    select: {
+      id: true,
+      code: true,
+    },
+  });
+
+  const formTypeByCode = new Map(formTypes.map((formType) => [formType.code, formType]));
+  const usablePresets = presetDefinitions
+    .map((preset, index) => {
+      const formType = formTypeByCode.get(preset.formCode);
+      if (!formType) {
+        return null;
+      }
+
+      return {
+        ...preset,
+        formTypeId: formType.id,
+        sortOrder: index + 1,
+      };
+    })
+    .filter((preset): preset is NonNullable<typeof preset> => Boolean(preset));
+
+  await prisma.$transaction(async (tx) => {
+    for (const preset of usablePresets) {
+      await tx.metricDefinition.upsert({
+        where: {
+          code: preset.code,
+        },
+        create: {
+          code: preset.code,
+          formTypeId: preset.formTypeId,
+          sourceFieldKey: preset.sourceFieldKey,
+          name: preset.name,
+          description: preset.description,
+          unit: preset.unit,
+          isDashboardEnabled: true,
+          sortOrder: preset.sortOrder,
+          trendDirection: preset.trendDirection,
+          normalThreshold: preset.normalThreshold,
+          goodThreshold: preset.goodThreshold,
+        },
+        update: {
+          formTypeId: preset.formTypeId,
+          sourceFieldKey: preset.sourceFieldKey,
+          name: preset.name,
+          description: preset.description,
+          unit: preset.unit,
+          isDashboardEnabled: true,
+          sortOrder: preset.sortOrder,
+          trendDirection: preset.trendDirection,
+          normalThreshold: preset.normalThreshold,
+          goodThreshold: preset.goodThreshold,
+        },
+      });
+    }
+  });
+
+  const rebuildResult = await rebuildAggregatedMetricsForDashboard();
+  revalidateStatsDashboardViews();
+  redirect(
+    `/admin?view=settings&statsPresetsInstalled=${encodeURIComponent(`${usablePresets.length}|${rebuildResult.valuesWritten}`)}`,
+  );
 }
 
 export async function applyArchiveF12MappingAction(formData: FormData) {

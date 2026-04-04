@@ -20,14 +20,20 @@ function createPrismaClient() {
   });
 }
 
-function hasArchiveStructureOverrideDelegate(client: PrismaClient | undefined) {
-  return Boolean(client && "archiveStructureOverride" in client);
+function hasExpectedDelegates(client: PrismaClient | undefined) {
+  return Boolean(
+    client &&
+      "archiveStructureOverride" in client &&
+      "dashboardFilterDefinition" in client &&
+      "dashboardFilterOption" in client &&
+      "dashboardMetricFilterOption" in client,
+  );
 }
 
 const existingPrisma = globalForPrisma.prisma;
 
 export const prisma: PrismaClient =
-  existingPrisma && hasArchiveStructureOverrideDelegate(existingPrisma)
+  existingPrisma && hasExpectedDelegates(existingPrisma)
     ? existingPrisma
     : createPrismaClient();
 

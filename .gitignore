@@ -1,0 +1,7 @@
+forms/
+forms-ex/
+db/
+
+*.dump
+*.tgz
+*.tar
