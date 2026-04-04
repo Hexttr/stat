@@ -85,6 +85,12 @@ enum ArchiveQaIssueStatus {
   VERIFIED
 }
 
+enum ArchiveStructureOverrideTargetType {
+  TABLE_TITLE
+  ROW_LABEL
+  COLUMN_LABEL
+}
+
 model User {
   id            String           @id @default(cuid())
   email         String           @unique
@@ -98,6 +104,8 @@ model User {
   reviews       Submission[]     @relation("SubmissionReviewedBy")
   publishedFormVersions FormTemplateVersion[] @relation("FormVersionPublishedBy")
   archiveQaIssues ArchiveQaIssue[] @relation("ArchiveQaIssueCreatedBy")
+  archiveStructureOverridesCreated ArchiveStructureOverride[] @relation("ArchiveStructureOverrideCreatedBy")
+  archiveStructureOverridesUpdated ArchiveStructureOverride[] @relation("ArchiveStructureOverrideUpdatedBy")
   credentialProvisionBatches CredentialProvisionBatch[] @relation("CredentialProvisionBatchCreatedBy")
   credentialProvisionEntries CredentialProvisionEntry[]
   createdAt     DateTime         @default(now())
@@ -159,6 +167,7 @@ model ReportingYear {
   aggregatedMetrics AggregatedMetric[]
   metricFormulas  MetricFormulaVersion[]
   importFiles     ImportFile[]
+  archiveStructureOverrides ArchiveStructureOverride[]
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
 }
@@ -170,6 +179,7 @@ model FormType {
   description    String?
   templates      FormTemplate[]
   importFiles    ImportFile[]
+  archiveStructureOverrides ArchiveStructureOverride[]
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
 }
@@ -253,6 +263,8 @@ model FormAssignment {
   updatedAt           DateTime              @updatedAt
 
   @@unique([templateVersionId, reportingYearId, regionId, organizationId])
+  @@index([reportingYearId, regionId])
+  @@index([organizationId, reportingYearId])
 }
 
 model Submission {
@@ -275,6 +287,7 @@ model Submission {
   updatedAt           DateTime          @updatedAt
 
   @@unique([assignmentId, organizationId])
+  @@index([organizationId])
 }
 
 model SubmissionValue {
@@ -408,6 +421,11 @@ model ImportFile {
   archiveQaIssues   ArchiveQaIssue[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+
+  @@index([batchId, status, reportingYearId, formTypeId])
+  @@index([batchId, reportingYearId, formTypeId, regionId])
+  @@index([batchId, regionId])
+  @@index([reportingYearId, formTypeId, regionId])
 }
 
 model ImportFieldValue {
@@ -423,6 +441,8 @@ model ImportFieldValue {
   importFile        ImportFile     @relation(fields: [importFileId], references: [id], onDelete: Cascade)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
+
+  @@index([importFileId])
 }
 
 model ImportIssue {
@@ -435,6 +455,8 @@ model ImportIssue {
   importFile        ImportFile           @relation(fields: [importFileId], references: [id], onDelete: Cascade)
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
+
+  @@index([importFileId])
 }
 
 model ArchiveQaIssue {
@@ -458,6 +480,31 @@ model ArchiveQaIssue {
 
   @@index([importFileId, status, createdAt])
   @@index([submissionId])
+}
+
+model ArchiveStructureOverride {
+  id              String                             @id @default(cuid())
+  formTypeId      String
+  reportingYearId String
+  targetType      ArchiveStructureOverrideTargetType
+  tableId         String
+  rowKey          String?
+  columnKey       String?
+  originalLabel   String?
+  overrideLabel   String
+  note            String?
+  createdById     String?
+  updatedById     String?
+  formType        FormType                            @relation(fields: [formTypeId], references: [id], onDelete: Cascade)
+  reportingYear   ReportingYear                       @relation(fields: [reportingYearId], references: [id], onDelete: Cascade)
+  createdBy       User?                               @relation("ArchiveStructureOverrideCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy       User?                               @relation("ArchiveStructureOverrideUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime                            @default(now())
+  updatedAt       DateTime                            @updatedAt
+
+  @@unique([formTypeId, reportingYearId, targetType, tableId, rowKey, columnKey])
+  @@index([formTypeId, reportingYearId, targetType])
+  @@index([reportingYearId, tableId])
 }
 
 model CredentialProvisionBatch {

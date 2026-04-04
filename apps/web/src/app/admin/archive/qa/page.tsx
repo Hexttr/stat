@@ -1,11 +1,17 @@
 import Link from "next/link";
 
-import { createArchiveQaIssueAction } from "@/app/admin/actions";
 import {
+  createArchiveQaIssueAction,
+  resetArchiveStructureOverrideAction,
+  saveArchiveStructureOverridesAction,
+} from "@/app/admin/actions";
+import {
+  ArchiveStructureOverrideTargetType,
   ImportFileStatus,
   OrganizationType,
   Prisma,
 } from "@/generated/prisma/client";
+import { parseAndNormalizeFormSchema } from "@/lib/form-builder/schema";
 import { requireSuperadmin } from "@/lib/access";
 import { HANDOFF_BATCH_NAME } from "@/lib/archive/service";
 import { prisma } from "@/lib/prisma";
@@ -117,6 +123,10 @@ function parseNotice(value: string | string[] | undefined, expectedLength: numbe
   return decoded.length >= expectedLength ? decoded : null;
 }
 
+function createStructureFieldName(index: number, field: string) {
+  return `overrides.${index}.${field}`;
+}
+
 function HelpHint({ text, label }: { text: string; label: string }) {
   return (
     <details className="group relative shrink-0">
@@ -142,6 +152,7 @@ export default async function AdminArchiveQaPage({
 
   const params = (await searchParams) ?? {};
   const issueCreated = parseNotice(params.issueCreated, 2);
+  const structureSaved = parseNotice(params.structureSaved, 3);
   const error = getParam(params, "error");
   const requestedYear = Number(getParam(params, "year") ?? 2024);
   const requestedPage = Number(getParam(params, "page") ?? 1);
@@ -244,7 +255,7 @@ export default async function AdminArchiveQaPage({
   const totalCandidateFiles = candidateFileCountRows[0]?.count ?? 0;
   const totalPages = Math.max(Math.ceil(totalCandidateFiles / fileListPageSize), 1);
   const safePage = Math.min(currentPage, totalPages);
-  const candidateFiles = await prisma.$queryRaw<
+  const candidateFilesBase = await prisma.$queryRaw<
     Array<{
       id: string;
       originalName: string;
@@ -253,9 +264,6 @@ export default async function AdminArchiveQaPage({
       regionFullName: string | null;
       formCode: string | null;
       year: number | null;
-      fieldValueCount: number;
-      issueCount: number;
-      qaIssueCount: number;
       missingSemantics: number;
     }>
   >`
@@ -267,23 +275,53 @@ export default async function AdminArchiveQaPage({
       r."fullName" as "regionFullName",
       ft.code as "formCode",
       ry.year as year,
-      count(distinct fv.id)::int as "fieldValueCount",
-      count(distinct ii.id)::int as "issueCount",
-      count(distinct qa.id)::int as "qaIssueCount",
       coalesce((f."extractedPayload"->>'missingSemantics')::int, 0) as "missingSemantics"
     from "ImportFile" f
     join "ReportingYear" ry on ry.id = f."reportingYearId"
     join "FormType" ft on ft.id = f."formTypeId"
     left join "Region" r on r.id = f."regionId"
-    left join "ImportFieldValue" fv on fv."importFileId" = f.id
-    left join "ImportIssue" ii on ii."importFileId" = f.id
-    left join "ArchiveQaIssue" qa on qa."importFileId" = f.id
     ${candidateFilesWhereSql}
-    group by f.id, f."originalName", f."storagePath", f."regionId", r."fullName", ft.code, ry.year
     order by r."fullName" asc nulls last, f."storagePath" asc
     limit ${fileListPageSize}
     offset ${(safePage - 1) * fileListPageSize}
   `;
+  const candidateFileIds = candidateFilesBase.map((file) => file.id);
+  const [fieldValueCountRows, issueCountRows, qaIssueCountRows] =
+    candidateFileIds.length > 0
+      ? await Promise.all([
+          prisma.$queryRaw<Array<{ importFileId: string; count: number }>>`
+            select "importFileId", count(*)::int as count
+            from "ImportFieldValue"
+            where "importFileId" in (${Prisma.join(candidateFileIds)})
+            group by "importFileId"
+          `,
+          prisma.$queryRaw<Array<{ importFileId: string; count: number }>>`
+            select "importFileId", count(*)::int as count
+            from "ImportIssue"
+            where "importFileId" in (${Prisma.join(candidateFileIds)})
+            group by "importFileId"
+          `,
+          prisma.$queryRaw<Array<{ importFileId: string; count: number }>>`
+            select "importFileId", count(*)::int as count
+            from "ArchiveQaIssue"
+            where "importFileId" in (${Prisma.join(candidateFileIds)})
+            group by "importFileId"
+          `,
+        ])
+      : [[], [], []];
+  const fieldValueCountByFileId = new Map(
+    fieldValueCountRows.map((row) => [row.importFileId, row.count]),
+  );
+  const issueCountByFileId = new Map(issueCountRows.map((row) => [row.importFileId, row.count]));
+  const qaIssueCountByFileId = new Map(
+    qaIssueCountRows.map((row) => [row.importFileId, row.count]),
+  );
+  const candidateFiles = candidateFilesBase.map((file) => ({
+    ...file,
+    fieldValueCount: fieldValueCountByFileId.get(file.id) ?? 0,
+    issueCount: issueCountByFileId.get(file.id) ?? 0,
+    qaIssueCount: qaIssueCountByFileId.get(file.id) ?? 0,
+  }));
 
   const requestedImportFileId = getParam(params, "importFileId");
   const effectiveImportFileId =
@@ -350,7 +388,21 @@ export default async function AdminArchiveQaPage({
         limit 20
       `
     : [];
-
+  const structureOverrides =
+    selectedFile?.formTypeId && selectedFile.reportingYearId
+      ? await prisma.archiveStructureOverride.findMany({
+          where: {
+            formTypeId: selectedFile.formTypeId,
+            reportingYearId: selectedFile.reportingYearId,
+          },
+          orderBy: [
+            { tableId: "asc" },
+            { targetType: "asc" },
+            { rowKey: "asc" },
+            { columnKey: "asc" },
+          ],
+        })
+      : [];
   const selectedSubmission =
     selectedFile?.regionId && selectedFile.reportingYearId && selectedFile.formTypeId
       ? await prisma.submission.findFirst({
@@ -392,6 +444,80 @@ export default async function AdminArchiveQaPage({
           },
         })
       : null;
+  const structureOverrideByTarget = new Map(
+    structureOverrides.map((override) => [
+      `${override.targetType}|${override.tableId}|${override.rowKey ?? ""}|${override.columnKey ?? ""}`,
+      override,
+    ]),
+  );
+  const selectedSchema =
+    selectedSubmission?.assignment.templateVersion.schemaJson ?? null;
+  const selectedStructureTables = selectedSchema
+    ? parseAndNormalizeFormSchema(selectedSchema).tables
+    : [];
+  const structureDraftEntries =
+    selectedFile?.formTypeId && selectedFile.reportingYearId
+      ? selectedStructureTables.flatMap((table) => {
+          const entries: Array<{
+            targetType: ArchiveStructureOverrideTargetType;
+            tableId: string;
+            rowKey: string | null;
+            columnKey: string | null;
+            originalLabel: string;
+            currentLabel: string;
+            overrideId: string | null;
+            note: string | null;
+          }> = [];
+
+          const tableOverride = structureOverrideByTarget.get(
+            `${ArchiveStructureOverrideTargetType.TABLE_TITLE}|${table.id}||`,
+          );
+          entries.push({
+            targetType: ArchiveStructureOverrideTargetType.TABLE_TITLE,
+            tableId: table.id,
+            rowKey: null,
+            columnKey: null,
+            originalLabel: table.title,
+            currentLabel: tableOverride?.overrideLabel ?? table.title,
+            overrideId: tableOverride?.id ?? null,
+            note: tableOverride?.note ?? null,
+          });
+
+          for (const row of table.rows) {
+            const rowOverride = structureOverrideByTarget.get(
+              `${ArchiveStructureOverrideTargetType.ROW_LABEL}|${table.id}|${row.key}|`,
+            );
+            entries.push({
+              targetType: ArchiveStructureOverrideTargetType.ROW_LABEL,
+              tableId: table.id,
+              rowKey: row.key,
+              columnKey: null,
+              originalLabel: row.label,
+              currentLabel: rowOverride?.overrideLabel ?? row.label,
+              overrideId: rowOverride?.id ?? null,
+              note: rowOverride?.note ?? null,
+            });
+          }
+
+          for (const column of table.columns) {
+            const columnOverride = structureOverrideByTarget.get(
+              `${ArchiveStructureOverrideTargetType.COLUMN_LABEL}|${table.id}||${column.key}`,
+            );
+            entries.push({
+              targetType: ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+              tableId: table.id,
+              rowKey: null,
+              columnKey: column.key,
+              originalLabel: column.label,
+              currentLabel: columnOverride?.overrideLabel ?? column.label,
+              overrideId: columnOverride?.id ?? null,
+              note: columnOverride?.note ?? null,
+            });
+          }
+
+          return entries;
+        })
+      : [];
   const selectedRawFieldValues =
     loadValues && selectedFile
       ? await prisma.importFieldValue.findMany({
@@ -522,6 +648,12 @@ export default async function AdminArchiveQaPage({
         {issueCreated ? (
           <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Замечание сохранено: тип {issueCreated[0]}, масштаб {issueCreated[1]}.
+          </p>
+        ) : null}
+        {structureSaved ? (
+          <p className="mt-6 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            Правки структуры сохранены: {structureSaved[0]} / {structureSaved[1]}, элементов:{" "}
+            {structureSaved[2]}.
           </p>
         ) : null}
 
@@ -1054,6 +1186,213 @@ export default async function AdminArchiveQaPage({
                     </button>
                   </div>
                 </form>
+              </section>
+
+              <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-2xl font-semibold text-slate-950">
+                        Доводка структуры формы
+                      </h3>
+                      <HelpHint
+                        label="Пояснение к доводке структуры"
+                        text="Здесь проверяющий может глобально исправить заголовки таблиц, строки и графы для всей архивной формы за выбранный год. Эти правки применяются ко всем регионам."
+                      />
+                    </div>
+                    <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                      Инструмент нужен для ручной доводки структуры отображения, когда автоматическая
+                      расшифровка оставила подписи вроде «Графа 3» или искаженные названия строк.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    {selectedFile.formType?.code ?? "Форма"} / {selectedFile.reportingYear?.year ?? "Год"}
+                  </div>
+                </div>
+
+                {selectedSubmission ? (
+                  <form action={saveArchiveStructureOverridesAction} className="mt-6 space-y-6">
+                    <input type="hidden" name="formTypeId" value={selectedFile.formTypeId ?? ""} />
+                    <input
+                      type="hidden"
+                      name="reportingYearId"
+                      value={selectedFile.reportingYearId ?? ""}
+                    />
+                    <input
+                      type="hidden"
+                      name="returnTo"
+                      value={buildQaHref({
+                        year: effectiveYear,
+                        formCode: effectiveFormCode,
+                        regionId: effectiveRegionId,
+                        importFileId: selectedFile.id,
+                        page: safePage,
+                        problemOnly,
+                        loadValues,
+                      })}
+                    />
+                    <div className="space-y-5">
+                      {selectedStructureTables.map((table) => {
+                        const tableEntries = structureDraftEntries.filter(
+                          (entry) => entry.tableId === table.id,
+                        );
+                        return (
+                          <article
+                            key={table.id}
+                            className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">{table.title}</p>
+                                <p className="mt-1 text-xs text-slate-500">{table.id}</p>
+                              </div>
+                              <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-600 ring-1 ring-slate-200">
+                                {formatCount(tableEntries.length)} элементов
+                              </span>
+                            </div>
+
+                            <div className="mt-5 space-y-4">
+                              {tableEntries.map((entry, index) => {
+                                const globalIndex = structureDraftEntries.findIndex(
+                                  (candidate) =>
+                                    candidate.targetType === entry.targetType &&
+                                    candidate.tableId === entry.tableId &&
+                                    candidate.rowKey === entry.rowKey &&
+                                    candidate.columnKey === entry.columnKey,
+                                );
+                                const targetLabel =
+                                  entry.targetType === ArchiveStructureOverrideTargetType.TABLE_TITLE
+                                    ? "Заголовок таблицы"
+                                    : entry.targetType === ArchiveStructureOverrideTargetType.ROW_LABEL
+                                      ? "Строка"
+                                      : "Графа";
+
+                                return (
+                                  <div
+                                    key={`${entry.targetType}-${entry.rowKey ?? "table"}-${entry.columnKey ?? "none"}-${index}`}
+                                    className="rounded-2xl border border-slate-200 bg-white p-4"
+                                  >
+                                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                      <div className="space-y-2">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                          {targetLabel}
+                                        </p>
+                                        <p className="text-sm text-slate-500">
+                                          original: <span className="font-medium text-slate-700">{entry.originalLabel}</span>
+                                        </p>
+                                        <p className="text-xs text-slate-500">
+                                          key: {entry.rowKey ?? entry.columnKey ?? table.id}
+                                        </p>
+                                      </div>
+                                      {entry.overrideId ? (
+                                        <button
+                                          type="submit"
+                                          formAction={resetArchiveStructureOverrideAction}
+                                          name="overrideId"
+                                          value={entry.overrideId}
+                                          className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                                        >
+                                          Сбросить правку
+                                        </button>
+                                      ) : null}
+                                    </div>
+
+                                    {entry.overrideId ? (
+                                      <input
+                                        type="hidden"
+                                        name="returnTo"
+                                        value={buildQaHref({
+                                          year: effectiveYear,
+                                          formCode: effectiveFormCode,
+                                          regionId: effectiveRegionId,
+                                          importFileId: selectedFile.id,
+                                          page: safePage,
+                                          problemOnly,
+                                          loadValues,
+                                        })}
+                                      />
+                                    ) : null}
+
+                                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                                      <div className="space-y-2">
+                                        <label
+                                          htmlFor={`structure-label-${globalIndex}`}
+                                          className="text-sm font-medium text-slate-700"
+                                        >
+                                          Новое название
+                                        </label>
+                                        <input
+                                          id={`structure-label-${globalIndex}`}
+                                          name={createStructureFieldName(globalIndex, "overrideLabel")}
+                                          defaultValue={entry.currentLabel}
+                                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                                        />
+                                      </div>
+                                      <div className="space-y-2">
+                                        <label
+                                          htmlFor={`structure-note-${globalIndex}`}
+                                          className="text-sm font-medium text-slate-700"
+                                        >
+                                          Комментарий
+                                        </label>
+                                        <input
+                                          id={`structure-note-${globalIndex}`}
+                                          name={createStructureFieldName(globalIndex, "note")}
+                                          defaultValue={entry.note ?? ""}
+                                          placeholder="Почему это название лучше"
+                                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <input
+                                      type="hidden"
+                                      name={createStructureFieldName(globalIndex, "targetType")}
+                                      value={entry.targetType}
+                                    />
+                                    <input
+                                      type="hidden"
+                                      name={createStructureFieldName(globalIndex, "tableId")}
+                                      value={entry.tableId}
+                                    />
+                                    <input
+                                      type="hidden"
+                                      name={createStructureFieldName(globalIndex, "rowKey")}
+                                      value={entry.rowKey ?? ""}
+                                    />
+                                    <input
+                                      type="hidden"
+                                      name={createStructureFieldName(globalIndex, "columnKey")}
+                                      value={entry.columnKey ?? ""}
+                                    />
+                                    <input
+                                      type="hidden"
+                                      name={createStructureFieldName(globalIndex, "originalLabel")}
+                                      value={entry.originalLabel}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        className="rounded-2xl bg-[#1f67ab] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#185993]"
+                      >
+                        Сохранить правки структуры
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+                    Для ручной доводки структуры нужен найденный архивный `Submission`-шаблон выбранной формы.
+                  </div>
+                )}
               </section>
 
               <section className="grid gap-6 xl:grid-cols-2">

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
+  ArchiveStructureOverrideTargetType,
   FormAssignmentStatus,
   FormTemplateVersionStatus,
   ImportFileStatus,
@@ -14,6 +15,7 @@ import {
   createDefaultFormSchema,
   duplicateFormSchema,
   formBuilderSchema,
+  type FormBuilderSchema,
   type FormTableRow,
   type FormTableSchema,
   parseAndNormalizeFormSchema,
@@ -415,6 +417,188 @@ function createGenericArchiveColumnLabel(
   }
 
   return `Графа ${normalizeArchiveText(rawColumnNumber) || rawColumnNumber}`;
+}
+
+type ArchiveStructureOverrideRecord = {
+  targetType: ArchiveStructureOverrideTargetType;
+  tableId: string;
+  rowKey: string | null;
+  columnKey: string | null;
+  overrideLabel: string;
+};
+
+async function getArchiveStructureOverrides(params: {
+  formCode: string;
+  year: number;
+}) {
+  const overrides = await prisma.archiveStructureOverride.findMany({
+    where: {
+      formType: {
+        code: params.formCode,
+      },
+      reportingYear: {
+        year: params.year,
+      },
+    },
+    select: {
+      targetType: true,
+      tableId: true,
+      rowKey: true,
+      columnKey: true,
+      overrideLabel: true,
+    },
+  });
+
+  return overrides;
+}
+
+function applyArchiveStructureOverrides(
+  schema: FormBuilderSchema,
+  overrides: ArchiveStructureOverrideRecord[],
+) {
+  if (overrides.length === 0) {
+    return schema;
+  }
+
+  const tableTitleOverrides = new Map<string, string>();
+  const rowLabelOverrides = new Map<string, string>();
+  const columnLabelOverrides = new Map<string, string>();
+
+  for (const override of overrides) {
+    switch (override.targetType) {
+      case ArchiveStructureOverrideTargetType.TABLE_TITLE:
+        tableTitleOverrides.set(override.tableId, override.overrideLabel);
+        break;
+      case ArchiveStructureOverrideTargetType.ROW_LABEL:
+        if (override.rowKey) {
+          rowLabelOverrides.set(`${override.tableId}::${override.rowKey}`, override.overrideLabel);
+        }
+        break;
+      case ArchiveStructureOverrideTargetType.COLUMN_LABEL:
+        if (override.columnKey) {
+          columnLabelOverrides.set(
+            `${override.tableId}::${override.columnKey}`,
+            override.overrideLabel,
+          );
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  for (const table of schema.tables) {
+    const overriddenTitle = tableTitleOverrides.get(table.id);
+    if (overriddenTitle) {
+      table.title = overriddenTitle;
+    }
+
+    for (const row of table.rows) {
+      const overriddenRowLabel = rowLabelOverrides.get(`${table.id}::${row.key}`);
+      if (overriddenRowLabel) {
+        row.label = overriddenRowLabel;
+      }
+    }
+
+    for (const column of table.columns) {
+      const overriddenColumnLabel = columnLabelOverrides.get(`${table.id}::${column.key}`);
+      if (overriddenColumnLabel) {
+        column.label = overriddenColumnLabel;
+      }
+    }
+  }
+
+  return schema;
+}
+
+export async function finalizeArchiveSchema(params: {
+  schema: FormBuilderSchema;
+  formCode: string;
+  year: number;
+}) {
+  const overrides = await getArchiveStructureOverrides({
+    formCode: params.formCode,
+    year: params.year,
+  });
+
+  return parseAndNormalizeFormSchema(applyArchiveStructureOverrides(params.schema, overrides));
+}
+
+export async function refreshArchiveVersionOverrides(params: { versionId: string }) {
+  const version = await prisma.formTemplateVersion.findUnique({
+    where: {
+      id: params.versionId,
+    },
+    include: {
+      template: {
+        include: {
+          formType: true,
+        },
+      },
+      reportingYear: true,
+    },
+  });
+
+  if (!version) {
+    throw new Error(`Версия шаблона ${params.versionId} не найдена.`);
+  }
+
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema: parseAndNormalizeFormSchema(version.schemaJson),
+    formCode: version.template.formType.code,
+    year: version.reportingYear.year,
+  });
+  const projectedFields = projectSchemaToFields(normalizedSchema);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.formTemplateVersion.update({
+      where: {
+        id: version.id,
+      },
+      data: {
+        schemaJson: normalizedSchema,
+      },
+    });
+
+    await tx.formField.deleteMany({
+      where: {
+        templateVersionId: version.id,
+      },
+    });
+
+    for (const fieldChunk of chunkArray(projectedFields, 1000)) {
+      if (fieldChunk.length === 0) {
+        continue;
+      }
+
+      await tx.formField.createMany({
+        data: fieldChunk.map((field) => ({
+          templateVersionId: version.id,
+          key: field.key,
+          label: field.label,
+          section: field.section,
+          tableId: field.tableId,
+          rowId: field.rowId,
+          rowKey: field.rowKey,
+          columnId: field.columnId,
+          columnKey: field.columnKey,
+          fieldPath: field.fieldPath,
+          fieldType: field.fieldType,
+          unit: field.unit,
+          placeholder: field.placeholder,
+          helpText: field.helpText,
+          sortOrder: field.sortOrder,
+          isRequired: field.isRequired,
+          validationJson: field.validationJson ?? undefined,
+        })),
+      });
+    }
+  });
+
+  return {
+    versionId: version.id,
+    fieldCount: projectedFields.length,
+  };
 }
 
 type F12ManualRowSplit = {
@@ -1971,7 +2155,11 @@ export async function enrichArchiveF12Structure(params?: {
     }
   }
 
-  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema,
+    formCode: "F12",
+    year: targetYear,
+  });
   const projectedFields = projectSchemaToFields(normalizedSchema);
   const existingArchiveSubmissionValues = await prisma.submissionValue.count({
     where: {
@@ -2220,7 +2408,11 @@ export async function enrichArchiveF14Structure(params?: {
       };
     });
 
-  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema,
+    formCode: "F14",
+    year: targetYear,
+  });
   const projectedFields = projectSchemaToFields(normalizedSchema);
   const existingArchiveSubmissionValues = await prisma.submissionValue.count({
     where: {
@@ -2469,7 +2661,11 @@ export async function enrichArchiveF19Structure(params?: {
       };
     });
 
-  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema,
+    formCode: "F19",
+    year: targetYear,
+  });
   const projectedFields = projectSchemaToFields(normalizedSchema);
   const existingArchiveSubmissionValues = await prisma.submissionValue.count({
     where: {
@@ -2718,7 +2914,11 @@ export async function enrichArchiveF30Structure(params?: {
       };
     });
 
-  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema,
+    formCode: "F30",
+    year: targetYear,
+  });
   const projectedFields = projectSchemaToFields(normalizedSchema);
   const existingArchiveSubmissionValues = await prisma.submissionValue.count({
     where: {
@@ -4560,7 +4760,11 @@ export async function enrichArchiveF47Structure(params?: {
       };
     });
 
-  const normalizedSchema = parseAndNormalizeFormSchema(schema);
+  const normalizedSchema = await finalizeArchiveSchema({
+    schema,
+    formCode: "F47",
+    year: targetYear,
+  });
   const projectedFields = projectSchemaToFields(normalizedSchema);
   const existingArchiveSubmissionValues = await prisma.submissionValue.count({
     where: {

@@ -17,6 +17,7 @@ import {
   loadHandoffSubjects,
   normalizeCanonText,
 } from "@/lib/archive/handoff";
+import { getArchiveDashboardSnapshot } from "@/lib/archive/admin-dashboard";
 import { requireSuperadmin } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
 
@@ -61,13 +62,7 @@ export default async function AdminArchivePage({
     formTypes,
     batch,
     docxBatch,
-    docxImportMetricsRows,
-    docxOverallImportMetrics,
-    versionCountRows,
-    importMetricsRows,
-    overallImportMetrics,
-    submissionCoverageRows,
-    docxQaBacklogRows,
+    dashboardSnapshot,
   ] = await Promise.all([
     searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>),
     loadHandoffSubjects(),
@@ -97,247 +92,18 @@ export default async function AdminArchivePage({
         name: true,
       },
     }),
-    prisma.$queryRaw<
-      Array<{
-        year: number;
-        formCode: string;
-        subjectDocs: bigint;
-        scopeDocs: bigint;
-        unmatchedSubjectDocs: bigint;
-        extractedDocs: bigint;
-        distinctRegions: bigint;
-        duplicateSubjectFiles: bigint;
-        nullRegionFiles: bigint;
-        stagedValues: bigint;
-        structureSignatures: bigint;
-      }>
-    >`
-      select
-        ry.year as year,
-        ft.code as "formCode",
-        count(*) filter (
-          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-        ) as "subjectDocs",
-        count(*) filter (
-          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', '') = 'SCOPE'
-        ) as "scopeDocs",
-        count(*) filter (
-          where coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-            and f."regionId" is null
-        ) as "unmatchedSubjectDocs",
-        count(*) filter (
-          where f.status = 'EXTRACTED'
-            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-        ) as "extractedDocs",
-        count(distinct f."regionId") filter (
-          where f.status = 'EXTRACTED'
-            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-            and f."regionId" is not null
-        ) as "distinctRegions",
-        (
-          count(*) filter (
-            where f.status = 'EXTRACTED'
-              and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-              and f."regionId" is not null
-          )
-          - count(distinct f."regionId") filter (
-            where f.status = 'EXTRACTED'
-              and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-              and f."regionId" is not null
-          )
-        ) as "duplicateSubjectFiles",
-        count(*) filter (
-          where f.status = 'EXTRACTED'
-            and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-            and f."regionId" is null
-        ) as "nullRegionFiles",
-        coalesce(
-          sum(
-            case
-              when f.status = 'EXTRACTED'
-                and coalesce(f."detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-              then coalesce((f."extractedPayload"->>'totalValues')::bigint, 0)
-              else 0
-            end
-          ),
-          0
-        ) as "stagedValues",
-        count(distinct nullif(f."extractedPayload"->>'structureSignature', '')) as "structureSignatures"
-      from "ImportFile" f
-      join "ReportingYear" ry on ry.id = f."reportingYearId"
-      join "FormType" ft on ft.id = f."formTypeId"
-      where f."batchId" = ${CANONICAL_DOCX_BATCH_NAME}
-      group by ry.year, ft.code
-    `,
-    prisma.$queryRaw<
-      Array<{
-        importedDocs: bigint;
-        importedSubjectFiles: bigint;
-        scopeFiles: bigint;
-        unmatchedSubjectFiles: bigint;
-        extractedFiles: bigint;
-        extractedValues: bigint;
-        structureSignatures: bigint;
-      }>
-    >`
-      select
-        count(*) as "importedDocs",
-        count(*) filter (
-          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-            and "regionId" is not null
-        ) as "importedSubjectFiles",
-        count(*) filter (
-          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', '') = 'SCOPE'
-        ) as "scopeFiles",
-        count(*) filter (
-          where coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-            and "regionId" is null
-        ) as "unmatchedSubjectFiles",
-        count(*) filter (
-          where status = 'EXTRACTED'
-            and coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-        ) as "extractedFiles",
-        coalesce(
-          sum(
-            case
-              when status = 'EXTRACTED'
-                and coalesce("detectedMetadata"->'docxRegistry'->>'resolvedKind', 'SUBJECT') = 'SUBJECT'
-              then coalesce(("extractedPayload"->>'totalValues')::bigint, 0)
-              else 0
-            end
-          ),
-          0
-        ) as "extractedValues",
-        count(distinct nullif("extractedPayload"->>'structureSignature', '')) as "structureSignatures"
-      from "ImportFile"
-      where "batchId" = ${CANONICAL_DOCX_BATCH_NAME}
-    `,
-    prisma.$queryRaw<
-      Array<{
-        year: number;
-        formCode: string;
-        versionCount: bigint;
-      }>
-    >`
-      select
-        ry.year as year,
-        ft.code as "formCode",
-        count(*) as "versionCount"
-      from "FormTemplateVersion" v
-      join "ReportingYear" ry on ry.id = v."reportingYearId"
-      join "FormTemplate" t on t.id = v."templateId"
-      join "FormType" ft on ft.id = t."formTypeId"
-      where ry.year between 2019 and 2024
-      group by ry.year, ft.code
-    `,
-    prisma.$queryRaw<
-      Array<{
-        year: number;
-        formCode: string;
-        importedDocs: bigint;
-        extractedDocs: bigint;
-        distinctRegions: bigint;
-        duplicateSubjectFiles: bigint;
-        nullRegionFiles: bigint;
-        stagedValues: bigint;
-      }>
-    >`
-      select
-        ry.year as year,
-        ft.code as "formCode",
-        count(*) as "importedDocs",
-        count(*) filter (where f.status = 'EXTRACTED') as "extractedDocs",
-        count(distinct f."regionId") filter (
-          where f.status = 'EXTRACTED' and f."regionId" is not null
-        ) as "distinctRegions",
-        (
-          count(*) filter (where f.status = 'EXTRACTED' and f."regionId" is not null)
-          - count(distinct f."regionId") filter (
-            where f.status = 'EXTRACTED' and f."regionId" is not null
-          )
-        ) as "duplicateSubjectFiles",
-        count(*) filter (
-          where f.status = 'EXTRACTED' and f."regionId" is null
-        ) as "nullRegionFiles",
-        coalesce(
-          sum(
-            case
-              when f.status = 'EXTRACTED'
-              then coalesce((f."extractedPayload"->>'totalValues')::bigint, 0)
-              else 0
-            end
-          ),
-          0
-        ) as "stagedValues"
-      from "ImportFile" f
-      join "ReportingYear" ry on ry.id = f."reportingYearId"
-      join "FormType" ft on ft.id = f."formTypeId"
-      where f."batchId" = ${HANDOFF_BATCH_NAME}
-      group by ry.year, ft.code
-    `,
-    prisma.$queryRaw<
-      Array<{
-        importedDocs: bigint;
-        importedSubjectFiles: bigint;
-        extractedFiles: bigint;
-        extractedValues: bigint;
-      }>
-    >`
-      select
-        count(*) as "importedDocs",
-        count(*) filter (where "regionId" is not null) as "importedSubjectFiles",
-        count(*) filter (where status = 'EXTRACTED') as "extractedFiles",
-        coalesce(
-          sum(
-            case
-              when status = 'EXTRACTED'
-              then coalesce(("extractedPayload"->>'totalValues')::bigint, 0)
-              else 0
-            end
-          ),
-          0
-        ) as "extractedValues"
-      from "ImportFile"
-      where "batchId" = ${HANDOFF_BATCH_NAME}
-    `,
-    prisma.$queryRaw<
-      Array<{
-        year: number;
-        formCode: string;
-        regionSubmissions: bigint;
-        mappedSubmissions: bigint;
-        mappedValues: bigint;
-      }>
-    >`
-      select
-        ry.year as year,
-        ft.code as "formCode",
-        count(distinct s.id) filter (where org.type = 'REGION_CENTER') as "regionSubmissions",
-        count(distinct case when org.type = 'REGION_CENTER' and sv.id is not null then s.id end) as "mappedSubmissions",
-        count(sv.id) filter (where org.type = 'REGION_CENTER') as "mappedValues"
-      from "Submission" s
-      join "FormAssignment" a on a.id = s."assignmentId"
-      join "Organization" org on org.id = s."organizationId"
-      join "FormTemplateVersion" v on v.id = a."templateVersionId"
-      join "FormTemplate" t on t.id = v."templateId"
-      join "FormType" ft on ft.id = t."formTypeId"
-      join "ReportingYear" ry on ry.id = a."reportingYearId"
-      left join "SubmissionValue" sv on sv."submissionId" = s.id
-      where ry.year between 2019 and 2024
-      group by ry.year, ft.code
-    `,
-    prisma.$queryRaw<
-      Array<{
-        qaBacklog: bigint;
-      }>
-    >`
-      select count(*) as "qaBacklog"
-      from "ArchiveQaIssue" q
-      join "ImportFile" f on f.id = q."importFileId"
-      where f."batchId" = ${CANONICAL_DOCX_BATCH_NAME}
-        and q.status <> 'RESOLVED'
-    `,
+    getArchiveDashboardSnapshot(),
   ]);
+
+  const {
+    docxImportMetricsRows,
+    docxOverallImportMetrics,
+    versionCountRows,
+    importMetricsRows,
+    overallImportMetrics,
+    submissionCoverageRows,
+    docxQaBacklogRows,
+  } = dashboardSnapshot;
 
   const synced = parseNotice(params.synced, 5);
   const registryImported = parseNotice(params.registryImported, 5);

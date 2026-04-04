@@ -3,6 +3,7 @@ import path from "node:path";
 import { cache } from "react";
 
 type CsvRow = Record<string, string>;
+const csvRowsCache = new Map<string, Promise<CsvRow[]>>();
 
 export type HandoffSubject = {
   subjectOktmoKey: string;
@@ -85,17 +86,33 @@ function parseCsvContent(input: string) {
 }
 
 async function readCsvRows(filePath: string) {
-  const content = await readFile(filePath, "utf8");
-  const parsedRows = parseCsvContent(content);
-  const [headers, ...dataRows] = parsedRows;
-
-  if (!headers || headers.length === 0) {
-    return [] as CsvRow[];
+  const cachedRows = csvRowsCache.get(filePath);
+  if (cachedRows) {
+    return cachedRows;
   }
 
-  return dataRows.map((row) =>
-    Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])),
-  );
+  const pendingRows = (async () => {
+    const content = await readFile(filePath, "utf8");
+    const parsedRows = parseCsvContent(content);
+    const [headers, ...dataRows] = parsedRows;
+
+    if (!headers || headers.length === 0) {
+      return [] as CsvRow[];
+    }
+
+    return dataRows.map((row) =>
+      Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])),
+    );
+  })();
+
+  csvRowsCache.set(filePath, pendingRows);
+
+  try {
+    return await pendingRows;
+  } catch (error) {
+    csvRowsCache.delete(filePath);
+    throw error;
+  }
 }
 
 function getWorkspaceRoot() {

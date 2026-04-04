@@ -1,7 +1,7 @@
 "use server";
 
 import { hash } from "bcryptjs";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
@@ -9,6 +9,7 @@ import {
   ArchiveQaIssueScale,
   ArchiveQaIssueStatus,
   ArchiveQaIssueType,
+  ArchiveStructureOverrideTargetType,
   FormAssignmentStatus,
   FormTemplateVersionStatus,
   OrganizationType,
@@ -30,12 +31,14 @@ import {
   ensureArchiveYearlyFormVersions,
   importArchiveRawValuesToStaging,
   importHandoffArchiveRegistry,
+  refreshArchiveVersionOverrides,
   syncCanonicalRegionsFromHandoff,
 } from "@/lib/archive/service";
 import {
   importCanonicalDocxArchiveRegistry,
   importCanonicalDocxValuesToStaging,
 } from "@/lib/archive/docx-service";
+import { ARCHIVE_DASHBOARD_CACHE_TAG } from "@/lib/archive/admin-dashboard";
 import {
   normalizeRuntimeValue,
   RuntimeValueMap,
@@ -224,6 +227,17 @@ const createArchiveQaIssueSchema = z.object({
   actualResult: z.string().trim().optional(),
 });
 
+const saveArchiveStructureOverridesSchema = z.object({
+  formTypeId: z.string().min(1, "Не найдена форма."),
+  reportingYearId: z.string().min(1, "Не найден отчетный год."),
+  returnTo: z.string().trim().optional(),
+});
+
+const resetArchiveStructureOverrideSchema = z.object({
+  overrideId: z.string().min(1, "Не найдена правка."),
+  returnTo: z.string().trim().optional(),
+});
+
 const reviewSubmissionSchema = z.object({
   submissionId: z.string().min(1, "Не найдена отправка формы."),
   decision: z.enum([
@@ -245,6 +259,16 @@ function appendSearchParam(url: string, param: string) {
   const [base, hash] = url.split("#");
   const separator = base.includes("?") ? "&" : "?";
   return `${base}${separator}${param}${hash ? `#${hash}` : ""}`;
+}
+
+function revalidateArchiveAdminViews() {
+  revalidatePath("/admin/archive");
+  revalidateTag(ARCHIVE_DASHBOARD_CACHE_TAG, "max");
+}
+
+function getSafeArchiveReturnTo(rawValue: FormDataEntryValue | null) {
+  const raw = typeof rawValue === "string" ? rawValue : "/admin/archive/qa";
+  return raw.startsWith("/") ? raw : "/admin/archive/qa";
 }
 
 function parseRuntimeValues(rawJson: string) {
@@ -2167,7 +2191,7 @@ export async function syncCanonicalRegionsAction(formData: FormData) {
   });
 
   const result = await syncCanonicalRegionsFromHandoff();
-  revalidatePath("/admin/archive");
+  revalidateArchiveAdminViews();
   revalidatePath("/admin/archive/qa");
   revalidatePath("/admin/forms");
   revalidatePath("/admin/operators");
@@ -2187,7 +2211,7 @@ export async function importHandoffArchiveRegistryAction(formData: FormData) {
   });
 
   const result = await importHandoffArchiveRegistry();
-  revalidatePath("/admin/archive");
+  revalidateArchiveAdminViews();
 
   redirect(
     `${parsed.returnTo || "/admin/archive"}?registryImported=${encodeURIComponent(
@@ -2204,7 +2228,7 @@ export async function importCanonicalDocxArchiveRegistryAction(formData: FormDat
   });
 
   const result = await importCanonicalDocxArchiveRegistry();
-  revalidatePath("/admin/archive");
+  revalidateArchiveAdminViews();
   revalidatePath("/admin/archive/qa");
 
   redirect(
@@ -2222,7 +2246,7 @@ export async function ensureArchiveYearlyFormsAction(formData: FormData) {
   });
 
   const result = await ensureArchiveYearlyFormVersions();
-  revalidatePath("/admin/archive");
+  revalidateArchiveAdminViews();
   revalidatePath("/admin/forms");
 
   redirect(
@@ -2242,7 +2266,7 @@ export async function runArchivePilotImportAction(formData: FormData) {
   });
 
   const result = await createArchivePilotRegionSubmissions(parsed);
-  revalidatePath("/admin/archive");
+  revalidateArchiveAdminViews();
   revalidatePath("/admin/forms");
 
   redirect(
@@ -2264,7 +2288,7 @@ export async function importArchiveRawValuesAction(formData: FormData) {
 
   try {
     const result = await importArchiveRawValuesToStaging(parsed);
-    revalidatePath("/admin/archive");
+    revalidateArchiveAdminViews();
 
     redirect(
       `/admin/archive?valuesImported=${encodeURIComponent(
@@ -2292,7 +2316,7 @@ export async function importCanonicalDocxValuesAction(formData: FormData) {
 
   try {
     const result = await importCanonicalDocxValuesToStaging(parsed);
-    revalidatePath("/admin/archive");
+    revalidateArchiveAdminViews();
     revalidatePath("/admin/archive/qa");
 
     redirect(
@@ -2321,7 +2345,7 @@ export async function applyArchivePilotMappingAction(formData: FormData) {
 
   try {
     const result = await applyArchivePilotMappingByForm(parsed);
-    revalidatePath("/admin/archive");
+    revalidateArchiveAdminViews();
     revalidatePath("/admin/forms");
 
     redirect(
@@ -2339,7 +2363,10 @@ export async function applyArchivePilotMappingAction(formData: FormData) {
 }
 
 export async function applyArchiveF12MappingAction(formData: FormData) {
-  const payload = new FormData(formData);
+  const payload = new FormData();
+  for (const [key, value] of formData.entries()) {
+    payload.append(key, value);
+  }
   payload.set("formCode", "F12");
   return applyArchivePilotMappingAction(payload);
 }
@@ -2442,6 +2469,7 @@ export async function createArchiveQaIssueAction(formData: FormData) {
     )
   `;
 
+  revalidateArchiveAdminViews();
   revalidatePath("/admin/archive/qa");
   redirect(
     appendSearchParam(
@@ -2449,6 +2477,270 @@ export async function createArchiveQaIssueAction(formData: FormData) {
       `issueCreated=${encodeURIComponent(`${parsed.data.type}|${parsed.data.scale}`)}`,
     ),
   );
+}
+
+export async function saveArchiveStructureOverridesAction(formData: FormData) {
+  const currentUser = await requireSuperadmin();
+  const parsed = saveArchiveStructureOverridesSchema.safeParse({
+    formTypeId: formData.get("formTypeId"),
+    reportingYearId: formData.get("reportingYearId"),
+    returnTo: formData.get("returnTo"),
+  });
+  const returnTo = getSafeArchiveReturnTo(formData.get("returnTo"));
+
+  if (!parsed.success) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent(
+          parsed.error.issues[0]?.message ?? "Не удалось сохранить правки структуры.",
+        )}`,
+      ),
+    );
+  }
+
+  const formType = await prisma.formType.findUnique({
+    where: {
+      id: parsed.data.formTypeId,
+    },
+    select: {
+      id: true,
+      code: true,
+    },
+  });
+  const reportingYear = await prisma.reportingYear.findUnique({
+    where: {
+      id: parsed.data.reportingYearId,
+    },
+    select: {
+      id: true,
+      year: true,
+    },
+  });
+
+  if (!formType || !reportingYear) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Не удалось определить форму или отчетный год для правок.")}`,
+      ),
+    );
+  }
+
+  const overrideIndexes = Array.from(formData.keys())
+    .map((key) => key.match(/^overrides\.(\d+)\.targetType$/))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .map((match) => Number(match[1]))
+    .sort((left, right) => left - right);
+
+  if (overrideIndexes.length === 0) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent("Нет данных для сохранения правок структуры.")}`,
+      ),
+    );
+  }
+
+  const overrideEntrySchema = z.object({
+    targetType: z.enum([
+      ArchiveStructureOverrideTargetType.TABLE_TITLE,
+      ArchiveStructureOverrideTargetType.ROW_LABEL,
+      ArchiveStructureOverrideTargetType.COLUMN_LABEL,
+    ]),
+    tableId: z.string().min(1),
+    rowKey: z.string().trim().nullable().optional(),
+    columnKey: z.string().trim().nullable().optional(),
+    originalLabel: z.string().trim().nullable().optional(),
+    overrideLabel: z.string().trim().min(1),
+    note: z.string().trim().nullable().optional(),
+  });
+
+  const overridesParse = z
+    .array(overrideEntrySchema)
+    .safeParse(
+      overrideIndexes.map((index) => ({
+        targetType: formData.get(`overrides.${index}.targetType`),
+        tableId: formData.get(`overrides.${index}.tableId`),
+        rowKey: formData.get(`overrides.${index}.rowKey`) || null,
+        columnKey: formData.get(`overrides.${index}.columnKey`) || null,
+        originalLabel: formData.get(`overrides.${index}.originalLabel`) || null,
+        overrideLabel: formData.get(`overrides.${index}.overrideLabel`),
+        note: formData.get(`overrides.${index}.note`) || null,
+      })),
+    );
+
+  if (!overridesParse.success) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent(
+          overridesParse.error.issues[0]?.message ?? "Невозможно разобрать правки структуры формы.",
+        )}`,
+      ),
+    );
+  }
+
+  const normalizedOverrides = overridesParse.data.map((override) => ({
+    ...override,
+    rowKey: override.rowKey?.trim() || "",
+    columnKey: override.columnKey?.trim() || "",
+    originalLabel: override.originalLabel?.trim() || null,
+    overrideLabel: override.overrideLabel.trim(),
+    note: override.note?.trim() || null,
+  }));
+  const changedOverrides = normalizedOverrides.filter(
+    (override) => override.overrideLabel !== (override.originalLabel ?? ""),
+  );
+
+  await prisma.$transaction(async (tx) => {
+    const allOverrideKeys = normalizedOverrides.map((override) => ({
+      formTypeId: parsed.data.formTypeId,
+      reportingYearId: parsed.data.reportingYearId,
+      targetType: override.targetType,
+      tableId: override.tableId,
+      rowKey: override.rowKey,
+      columnKey: override.columnKey,
+    }));
+
+    for (const overrideKey of allOverrideKeys) {
+      await tx.archiveStructureOverride.deleteMany({
+        where: overrideKey,
+      });
+    }
+
+    for (const override of changedOverrides) {
+      await tx.archiveStructureOverride.upsert({
+        where: {
+          formTypeId_reportingYearId_targetType_tableId_rowKey_columnKey: {
+            formTypeId: parsed.data.formTypeId,
+            reportingYearId: parsed.data.reportingYearId,
+            targetType: override.targetType,
+            tableId: override.tableId,
+            rowKey: override.rowKey,
+            columnKey: override.columnKey,
+          },
+        },
+        create: {
+          formTypeId: parsed.data.formTypeId,
+          reportingYearId: parsed.data.reportingYearId,
+          targetType: override.targetType,
+          tableId: override.tableId,
+          rowKey: override.rowKey,
+          columnKey: override.columnKey,
+          originalLabel: override.originalLabel,
+          overrideLabel: override.overrideLabel,
+          note: override.note,
+          createdById: currentUser.id,
+          updatedById: currentUser.id,
+        },
+        update: {
+          originalLabel: override.originalLabel,
+          overrideLabel: override.overrideLabel,
+          note: override.note,
+          updatedById: currentUser.id,
+        },
+      });
+    }
+  });
+
+  const archiveVersion = await prisma.formTemplateVersion.findFirst({
+    where: {
+      reportingYearId: parsed.data.reportingYearId,
+      template: {
+        formTypeId: parsed.data.formTypeId,
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (archiveVersion) {
+    await refreshArchiveVersionOverrides({
+      versionId: archiveVersion.id,
+    });
+  }
+
+  revalidateArchiveAdminViews();
+  revalidatePath("/admin/archive/qa");
+  redirect(
+    appendSearchParam(
+      returnTo,
+      `structureSaved=${encodeURIComponent(`${formType.code}|${reportingYear.year}|${changedOverrides.length}`)}`,
+    ),
+  );
+}
+
+export async function resetArchiveStructureOverrideAction(formData: FormData) {
+  await requireSuperadmin();
+  const parsed = resetArchiveStructureOverrideSchema.safeParse({
+    overrideId: formData.get("overrideId"),
+    returnTo: formData.get("returnTo"),
+  });
+  const returnTo = getSafeArchiveReturnTo(formData.get("returnTo"));
+
+  if (!parsed.success) {
+    redirect(
+      appendSearchParam(
+        returnTo,
+        `error=${encodeURIComponent(
+          parsed.error.issues[0]?.message ?? "Не удалось сбросить правку структуры.",
+        )}`,
+      ),
+    );
+  }
+
+  const existingOverride = await prisma.archiveStructureOverride.findUnique({
+    where: {
+      id: parsed.data.overrideId,
+    },
+    select: {
+      id: true,
+      formTypeId: true,
+      reportingYearId: true,
+    },
+  });
+
+  if (!existingOverride) {
+    redirect(
+      appendSearchParam(returnTo, `error=${encodeURIComponent("Правка структуры не найдена.")}`),
+    );
+  }
+
+  await prisma.archiveStructureOverride.delete({
+    where: {
+      id: parsed.data.overrideId,
+    },
+  });
+
+  const archiveVersion = await prisma.formTemplateVersion.findFirst({
+    where: {
+      reportingYearId: existingOverride.reportingYearId,
+      template: {
+        formTypeId: existingOverride.formTypeId,
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (archiveVersion) {
+    await refreshArchiveVersionOverrides({
+      versionId: archiveVersion.id,
+    });
+  }
+
+  revalidateArchiveAdminViews();
+  revalidatePath("/admin/archive/qa");
+  redirect(appendSearchParam(returnTo, "structureReset=1"));
 }
 
 export async function reviewSubmissionAction(formData: FormData) {
