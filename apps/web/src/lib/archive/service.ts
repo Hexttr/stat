@@ -506,6 +506,15 @@ function applyArchiveStructureOverrides(
         column.label = overriddenColumnLabel;
       }
     }
+
+    for (const descriptorColumn of table.descriptorColumns) {
+      const overriddenDescriptorLabel = columnLabelOverrides.get(
+        `${table.id}::${descriptorColumn.key}`,
+      );
+      if (overriddenDescriptorLabel) {
+        descriptorColumn.label = overriddenDescriptorLabel;
+      }
+    }
   }
 
   return schema;

@@ -2629,7 +2629,7 @@ export async function saveArchiveStructureOverridesAction(formData: FormData) {
     }
   });
 
-  const archiveVersion = await prisma.formTemplateVersion.findFirst({
+  const archiveVersions = await prisma.formTemplateVersion.findMany({
     where: {
       reportingYearId: parsed.data.reportingYearId,
       template: {
@@ -2644,7 +2644,7 @@ export async function saveArchiveStructureOverridesAction(formData: FormData) {
     },
   });
 
-  if (archiveVersion) {
+  for (const archiveVersion of archiveVersions) {
     await refreshArchiveVersionOverrides({
       versionId: archiveVersion.id,
     });
@@ -2702,7 +2702,7 @@ export async function resetArchiveStructureOverrideAction(formData: FormData) {
     },
   });
 
-  const archiveVersion = await prisma.formTemplateVersion.findFirst({
+  const archiveVersions = await prisma.formTemplateVersion.findMany({
     where: {
       reportingYearId: existingOverride.reportingYearId,
       template: {
@@ -2717,7 +2717,7 @@ export async function resetArchiveStructureOverrideAction(formData: FormData) {
     },
   });
 
-  if (archiveVersion) {
+  for (const archiveVersion of archiveVersions) {
     await refreshArchiveVersionOverrides({
       versionId: archiveVersion.id,
     });
