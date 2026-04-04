@@ -556,9 +556,24 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
     select: {
       id: true,
       key: true,
+      label: true,
+      section: true,
+      tableId: true,
+      rowId: true,
+      rowKey: true,
+      columnId: true,
+      columnKey: true,
+      fieldPath: true,
+      fieldType: true,
+      unit: true,
+      placeholder: true,
+      helpText: true,
+      sortOrder: true,
+      isRequired: true,
+      validationJson: true,
     },
   });
-  const existingFieldIdByKey = new Map(existingFields.map((field) => [field.key, field.id]));
+  const existingFieldByKey = new Map(existingFields.map((field) => [field.key, field]));
 
   await prisma.$transaction(async (tx) => {
     await tx.formTemplateVersion.update({
@@ -571,14 +586,36 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
     });
 
     for (const field of projectedFields) {
-      const existingFieldId = existingFieldIdByKey.get(field.key);
-      if (!existingFieldId) {
+      const existingField = existingFieldByKey.get(field.key);
+      if (!existingField) {
+        continue;
+      }
+
+      const validationJson = field.validationJson ?? null;
+      const hasChanges =
+        existingField.label !== field.label ||
+        existingField.section !== field.section ||
+        existingField.tableId !== field.tableId ||
+        existingField.rowId !== field.rowId ||
+        existingField.rowKey !== field.rowKey ||
+        existingField.columnId !== field.columnId ||
+        existingField.columnKey !== field.columnKey ||
+        existingField.fieldPath !== field.fieldPath ||
+        existingField.fieldType !== field.fieldType ||
+        existingField.unit !== field.unit ||
+        existingField.placeholder !== field.placeholder ||
+        existingField.helpText !== field.helpText ||
+        existingField.sortOrder !== field.sortOrder ||
+        existingField.isRequired !== field.isRequired ||
+        JSON.stringify(existingField.validationJson ?? null) !== JSON.stringify(validationJson);
+
+      if (!hasChanges) {
         continue;
       }
 
       await tx.formField.update({
         where: {
-          id: existingFieldId,
+          id: existingField.id,
         },
         data: {
           label: field.label,
@@ -599,6 +636,8 @@ export async function refreshArchiveVersionOverrides(params: { versionId: string
         },
       });
     }
+  }, {
+    timeout: 60_000,
   });
 
   return {
