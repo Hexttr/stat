@@ -13,12 +13,23 @@ if (!connectionString) {
 
 const adapter = new PrismaPg({ connectionString });
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+function createPrismaClient() {
+  return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
+}
+
+function hasArchiveStructureOverrideDelegate(client: PrismaClient | undefined) {
+  return Boolean(client && "archiveStructureOverride" in client);
+}
+
+const existingPrisma = globalForPrisma.prisma;
+
+export const prisma: PrismaClient =
+  existingPrisma && hasArchiveStructureOverrideDelegate(existingPrisma)
+    ? existingPrisma
+    : createPrismaClient();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
