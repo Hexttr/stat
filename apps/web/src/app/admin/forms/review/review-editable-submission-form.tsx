@@ -1,6 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useMemo, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import { ArchiveStructureEditor } from "@/app/admin/archive/qa/archive-structure-editor";
 import { RuntimeFormRenderer } from "@/components/forms/runtime-form-renderer";
@@ -32,6 +34,27 @@ type Props = {
   }>;
   errorMessage?: string | null;
 };
+
+function SaveValuesButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="pointer-events-auto inline-flex items-center gap-3 rounded-2xl bg-emerald-600 px-5 py-3 font-medium text-white shadow-2xl shadow-emerald-700/20 transition hover:bg-emerald-700 disabled:cursor-progress disabled:bg-emerald-400"
+    >
+      <Image
+        src="/logo.png"
+        alt=""
+        width={22}
+        height={22}
+        className={`rounded-full bg-white/90 p-0.5 ${pending ? "animate-pulse" : ""}`}
+      />
+      <span>{pending ? "Сохраняем изменения..." : "Сохранить изменения значений"}</span>
+    </button>
+  );
+}
 
 export function ReviewEditableSubmissionForm({
   submissionId,
@@ -151,12 +174,7 @@ export function ReviewEditableSubmissionForm({
           />
 
           <div className="pointer-events-none fixed bottom-6 right-6 z-40 flex justify-end lg:right-10">
-            <button
-              type="submit"
-              className="pointer-events-auto rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white shadow-2xl shadow-slate-900/20 transition hover:bg-slate-800"
-            >
-              Сохранить изменения значений
-            </button>
+            <SaveValuesButton />
           </div>
         </form>
       ) : canEditStructure ? (

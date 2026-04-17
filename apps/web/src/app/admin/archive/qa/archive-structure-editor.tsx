@@ -1,6 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useMemo, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import { RuntimeFormRenderer } from "@/components/forms/runtime-form-renderer";
 import { type FormBuilderSchema } from "@/lib/form-builder/schema";
@@ -27,6 +29,27 @@ type Props = {
   returnTo: string;
   saveAction: (formData: FormData) => void | Promise<void>;
 };
+
+function SaveStructureButton({ disabled }: { disabled: boolean }) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button
+      type="submit"
+      disabled={disabled || pending}
+      className="inline-flex items-center gap-3 rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
+    >
+      <Image
+        src="/logo.png"
+        alt=""
+        width={20}
+        height={20}
+        className={`rounded-full bg-white/90 p-0.5 ${pending ? "animate-pulse" : ""}`}
+      />
+      <span>{pending ? "Сохраняем структуру..." : "Сохранить правки структуры"}</span>
+    </button>
+  );
+}
 
 function makeEntryKey(entry: Pick<StructureEntry, "targetType" | "tableId" | "rowKey" | "columnKey">) {
   return `${entry.targetType}|${entry.tableId}|${entry.rowKey ?? ""}|${entry.columnKey ?? ""}`;
@@ -395,13 +418,7 @@ export function ArchiveStructureEditor({
         <p className="text-sm text-slate-500">
           К сохранению подготовлено правок: {serializedEntries.length}.
         </p>
-        <button
-          type="submit"
-          disabled={serializedEntries.length === 0}
-          className="rounded-2xl bg-[#1f67ab] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#185993] disabled:cursor-not-allowed disabled:bg-slate-300"
-        >
-          Сохранить правки структуры
-        </button>
+        <SaveStructureButton disabled={serializedEntries.length === 0} />
       </div>
     </form>
   );

@@ -387,6 +387,18 @@ function getSafeArchiveReturnTo(rawValue: FormDataEntryValue | null) {
   return raw.startsWith("/") ? raw : "/admin/archive/qa";
 }
 
+function getSafeInternalReturnTo(rawValue: string | null | undefined, fallback: string) {
+  if (!rawValue) {
+    return fallback;
+  }
+
+  return rawValue.startsWith("/") ? rawValue : fallback;
+}
+
+function redirectWithEncodedError(basePath: string, errorMessage: string): never {
+  redirect(`${basePath}?error=${encodeURIComponent(errorMessage)}`);
+}
+
 function parseRuntimeValues(rawJson: string) {
   const rawPayload = JSON.parse(rawJson) as Record<string, unknown>;
 
@@ -875,7 +887,12 @@ async function persistRegionSubmission(params: {
   ]);
 }
 
-async function getScopedSubmissionForReview(submissionId: string) {
+async function getScopedSubmissionForReview(
+  submissionId: string,
+  options?: {
+    skipFederalStatusCheck?: boolean;
+  },
+) {
   const currentUser = await requireAdminUser();
   const scope = getAdminScope(currentUser);
 
@@ -916,14 +933,20 @@ async function getScopedSubmissionForReview(submissionId: string) {
   });
 
   if (!submission) {
-    redirect("/admin/forms?error=Отправка формы не найдена или недоступна.");
+    redirectWithEncodedError("/admin/forms", "Отправка формы не найдена или недоступна.");
   }
 
-  if (!scope.isSuperadmin && submission.assignment.organization.type !== OrganizationType.MEDICAL_FACILITY) {
-    redirect("/admin/forms?error=Региональный администратор может проверять только формы операторов.");
+  if (
+    !scope.isSuperadmin &&
+    submission.assignment.organization.type !== OrganizationType.MEDICAL_FACILITY
+  ) {
+    redirectWithEncodedError(
+      "/admin/forms",
+      "Региональный администратор может проверять только формы операторов.",
+    );
   }
 
-  if (scope.isSuperadmin) {
+  if (scope.isSuperadmin && !options?.skipFederalStatusCheck) {
     const reviewableStatuses: SubmissionStatus[] =
       submission.assignment.organization.type === OrganizationType.REGION_CENTER
         ? [
@@ -942,7 +965,10 @@ async function getScopedSubmissionForReview(submissionId: string) {
           ];
 
     if (!reviewableStatuses.includes(submission.status)) {
-      redirect("/admin/forms?error=Эта отправка пока недоступна для проверки на федеральном уровне.");
+      redirectWithEncodedError(
+        "/admin/forms",
+        "Эта отправка пока недоступна для проверки на федеральном уровне.",
+      );
     }
   }
 
@@ -2258,7 +2284,9 @@ export async function saveReviewedSubmissionValuesAction(formData: FormData) {
     returnTo: formData.get("returnTo"),
   });
 
-  const { submission } = await getScopedSubmissionForReview(parsed.submissionId);
+  const { submission } = await getScopedSubmissionForReview(parsed.submissionId, {
+    skipFederalStatusCheck: true,
+  });
   const values = parseRuntimeValues(parsed.valuesJson);
   const fieldMap = new Map(
     submission.assignment.templateVersion.fields.map((field) => [field.key, field]),
@@ -2308,7 +2336,12 @@ export async function saveReviewedSubmissionValuesAction(formData: FormData) {
   revalidatePath(`/admin/forms/review/${submission.id}`);
   revalidatePath(`/admin/forms/assignments/${submission.assignmentId}`);
 
-  redirect(`${parsed.returnTo || `/admin/forms/review/${submission.id}`}?saved=1`);
+  const returnTo = getSafeInternalReturnTo(
+    parsed.returnTo,
+    `/admin/forms/review/${submission.id}`,
+  );
+
+  redirect(`${returnTo}?saved=1`);
 }
 
 export async function syncCanonicalRegionsAction(formData: FormData) {
