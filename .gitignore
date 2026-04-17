@@ -1,6 +1,6 @@
-forms/
-forms-ex/
-db/
+/forms/
+/forms-ex/
+/db/
 
 *.dump
 *.tgz

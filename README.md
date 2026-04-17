@@ -68,3 +68,36 @@ npm run dev
 - password: `Admin12345!`
 
 Эти значения можно переопределить через `ADMIN_EMAIL` и `ADMIN_PASSWORD` в `apps/web/.env`.
+
+## Deploy на сервер
+
+Для боевого стенда используется release-схема в `/opt/stat` с отдельными `shared/env`, `current` и `releases`.
+
+В репозитории есть скрипт `scripts/deploy_release.py`, который:
+
+1. собирает tar.gz из текущего состояния репозитория
+2. загружает новый release на сервер
+3. привязывает `apps/web/.env` к `/opt/stat/shared/env/web.env`
+4. выполняет `npm ci`, `prisma generate`, `prisma db push`, `npm run build`
+5. переключает `current` на новый release и перезапускает `stat-web`
+
+Минимальные переменные окружения для запуска:
+
+```bash
+export STAT_DEPLOY_HOST=178.170.165.88
+export STAT_DEPLOY_USER=user_adm
+export STAT_DEPLOY_PASSWORD=your-password
+export STAT_DEPLOY_SUDO_PASSWORD=your-password
+```
+
+Запуск:
+
+```bash
+python scripts/deploy_release.py
+```
+
+Если зависимости на сервере уже установлены и нужно просто быстро перевыкатить код:
+
+```bash
+python scripts/deploy_release.py --skip-install
+```

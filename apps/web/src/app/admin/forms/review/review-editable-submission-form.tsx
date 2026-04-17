@@ -139,7 +139,7 @@ export function ReviewEditableSubmissionForm({
       ) : null}
 
       {mode === "data" ? (
-        <form className="space-y-6">
+        <form action={saveAction} className="space-y-6">
           <input type="hidden" name="submissionId" value={submissionId} />
           <input type="hidden" name="returnTo" value={returnTo} />
           <input type="hidden" name="valuesJson" value={serializedValues} />
@@ -153,7 +153,6 @@ export function ReviewEditableSubmissionForm({
           <div className="pointer-events-none fixed bottom-6 right-6 z-40 flex justify-end lg:right-10">
             <button
               type="submit"
-              formAction={saveAction}
               className="pointer-events-auto rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white shadow-2xl shadow-slate-900/20 transition hover:bg-slate-800"
             >
               Сохранить изменения значений
